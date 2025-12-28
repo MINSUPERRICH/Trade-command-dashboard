@@ -21,6 +21,8 @@ st.markdown("""
     .pass { color: #00FF7F; font-weight: bold; }
     .fail { color: #FF4B4B; font-weight: bold; }
     .warning { color: #FFA500; font-weight: bold; }
+    .news-title { font-size: 16px; font-weight: bold; color: #4DA6FF; text-decoration: none;}
+    .news-meta { font-size: 12px; color: #888; margin-bottom: 10px;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -36,8 +38,6 @@ def get_stock_data(ticker_symbol):
 def calculate_delta(S, K, T, r, sigma, option_type='call'):
     """
     Calculates Option Delta using Black-Scholes formula.
-    S: Stock Price, K: Strike, T: Time to Expiration (years),
-    r: Risk-free rate, sigma: Implied Volatility
     """
     if T <= 0 or sigma <= 0: return 0
     d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
@@ -48,13 +48,10 @@ def calculate_delta(S, K, T, r, sigma, option_type='call'):
 
 def calculate_max_pain(options_chain):
     """Calculates the strike price where option writers lose the least money."""
-    # This is a simplified estimation summing cash value of all expiring options
     strikes = options_chain['strike'].unique()
     max_pain_data = []
 
     for strike in strikes:
-        # Assume stock expires at this strike
-        # Value of Calls = max(0, Strike - K) * OI
         calls_at_strike = options_chain[options_chain['type'] == 'call']
         puts_at_strike = options_chain[options_chain['type'] == 'put']
         
@@ -101,7 +98,6 @@ if ticker:
             full_chain = pd.concat([calls, puts])
             
             # Find specific contract user is interested in
-            # Look for the call closest to the strike input
             specific_contract = calls.iloc[(calls['strike'] - strike_price).abs().argsort()[:1]]
             if specific_contract.empty:
                 st.warning("Strike price not found in chain.")
@@ -125,15 +121,16 @@ if ticker:
 
     st.markdown("---")
 
-    # --- THE 6 TABS ---
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+    # --- THE 8 TABS (Updated) ---
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
         "1. Price (Gap)", 
         "2. Volume", 
         "3. IV (Fear)", 
         "4. Rule of 16", 
         "5. Vol vs OI", 
         "6. Delta (Odds)",
-        "💀 Max Pain"
+        "💀 Max Pain",
+        "📰 Scenarios (News)"
     ])
 
     # ---------------- TAB 1: PRICE GAP ----------------
@@ -155,13 +152,13 @@ if ticker:
     with tab2:
         st.header("Stock Volume Check")
         avg_vol = info.get('averageVolume', 0)
-        curr_vol = info.get('volume', 0) # Note: 'volume' in info is often delayed
+        curr_vol = info.get('volume', 0)
         
         st.write(f"**Average Daily Volume:** {avg_vol:,}")
         if curr_vol > 0:
             st.write(f"**Current Volume:** {curr_vol:,}")
         else:
-            st.write("*(Market might be closed or pre-market volume not available via free API)*")
+            st.write("*(Market might be closed or pre-market volume not available)*")
             
         st.info("💡 Look for 'Heavy Volume' at 9:35 AM to confirm the move is real.")
 
@@ -193,7 +190,7 @@ if ticker:
         with col_b:
             st.write(f"**Your Target Move:** ${target_profit_move:.2f}")
             if target_profit_move > daily_move_dollar:
-                st.error(f"❌ **FAIL:** You need ${target_profit_move}, but market only expects ${daily_move_dollar:.2f}. This is statistically unlikely today.")
+                st.error(f"❌ **FAIL:** You need ${target_profit_move}, but market only expects ${daily_move_dollar:.2f}. Unlikely.")
             else:
                 st.success(f"✅ **PASS:** Your target (${target_profit_move}) is within the expected range (${daily_move_dollar:.2f}).")
 
@@ -212,7 +209,7 @@ if ticker:
         st.write(f"**Vol / OI Ratio:** {ratio:.2f}")
         
         if contract_volume > contract_oi:
-            st.success("✅ **PASS (Breakout Signal):** Volume > Open Interest. New money is flooding in aggressively!")
+            st.success("✅ **PASS (Breakout Signal):** Volume > Open Interest. New money is flooding in!")
         elif ratio > 0.5:
              st.warning("⚠️ **WATCH:** Moderate activity.")
         else:
@@ -222,13 +219,11 @@ if ticker:
     with tab6:
         st.header("Odds Check (Delta)")
         
-        # Calculate Time to Expiry in Years
         expiry_dt = datetime.strptime(selected_date, "%Y-%m-%d")
         days_to_expiry = (expiry_dt - datetime.now()).days
         if days_to_expiry < 0: days_to_expiry = 0
         T = days_to_expiry / 365.0
         
-        # Risk free rate approx 4.5%
         delta = calculate_delta(current_price, strike_price, T, 0.045, contract_iv, 'call')
         
         st.metric("Delta (Win Probability)", f"{delta:.2f}")
@@ -236,14 +231,13 @@ if ticker:
         if delta < 0.30:
             st.error(f"❌ **High Risk:** Only {delta*100:.0f}% probability of expiring ITM.")
         elif delta > 0.70:
-            st.success(f"✅ **Safe (Deep ITM):** {delta*100:.0f}% probability, but expensive.")
+            st.success(f"✅ **Safe (Deep ITM):** {delta*100:.0f}% probability.")
         else:
             st.success(f"✅ **Good Balance:** {delta*100:.0f}% probability. Standard swing trade.")
 
     # ---------------- TAB 7: MAX PAIN ----------------
     with tab7:
         st.header("💀 Max Pain (The Magnet)")
-        st.write("Calculating Max Pain for this expiration... (this assumes simple cash value)")
         
         pain_price = calculate_max_pain(full_chain)
         
@@ -255,6 +249,73 @@ if ticker:
         if abs(diff) < 1.00:
             st.warning("🧲 **MAGNET EFFECT:** Stock is pinned near Max Pain.")
         elif current_price > pain_price:
-            st.info(f"📉 **Drag Risk:** Stock is ${diff:.2f} ABOVE Max Pain. Market Makers might want it lower.")
+            st.info(f"📉 **Drag Risk:** Stock is ${diff:.2f} ABOVE Max Pain. Magnet might pull it down.")
         else:
-            st.info(f"📈 **Lift Potential:** Stock is ${abs(diff):.2f} BELOW Max Pain. Market Makers might want it higher.")
+            st.info(f"📈 **Lift Potential:** Stock is ${abs(diff):.2f} BELOW Max Pain. Magnet might pull it up.")
+
+    # ---------------- TAB 8: SCENARIOS (NEWS) ----------------
+    with tab8:
+        st.header("📰 News & Catalyst Scenarios")
+
+        # 1. EARNINGS CHECKER (Try to fetch automatically)
+        st.subheader("1. Earnings Status")
+        try:
+            # Note: Fetching earnings dates can be tricky with free APIs, 
+            # we try to get the calendar or handle gracefully.
+            next_earn = "Unknown"
+            # Try getting news or calendar if available
+            cal = stock.calendar
+            if cal is not None and not cal.empty:
+                # Calendar format varies by yfinance version, usually has 'Earnings Date' or index
+                next_date = cal.iloc[0, 0] if not cal.empty else None
+                if next_date:
+                    st.write(f"**Next Earnings Date:** {next_date}")
+            else:
+                st.write("*(Earnings date not auto-detected. Check manually on Yahoo Finance)*")
+        except:
+            st.write("*(Earnings data unavailable via API)*")
+
+        st.markdown("---")
+
+        # 2. NEWS FEED
+        st.subheader("2. Recent News Feed (Look for 'Insider' or 'CEO')")
+        try:
+            news_list = stock.news
+            if news_list:
+                for item in news_list[:5]: # Show top 5
+                    title = item.get('title', 'No Title')
+                    link = item.get('link', '#')
+                    pub = item.get('publisher', 'Unknown')
+                    st.markdown(f"<a href='{link}' target='_blank' class='news-title'>{title}</a>", unsafe_allow_html=True)
+                    st.markdown(f"<div class='news-meta'>Source: {pub}</div>", unsafe_allow_html=True)
+            else:
+                st.write("No recent news found.")
+        except:
+            st.write("Could not fetch news.")
+
+        st.markdown("---")
+
+        # 3. MANUAL SCENARIO CHECKLIST
+        st.subheader("3. The 'Insider' Checklist")
+        st.write("Since computers can't always read 'Context', check these boxes if you see them in the news above:")
+        
+        col_check1, col_check2 = st.columns(2)
+        
+        with col_check1:
+            is_insider = st.checkbox("📢 Insider Buying (e.g. CEO bought shares)")
+            is_rebound = st.checkbox("📉 Stock dropped recently (Oversold)")
+        
+        with col_check2:
+            is_bad_earn = st.checkbox("⚠️ Bad Earnings Miss (< 7 days ago)")
+            is_downgrade = st.checkbox("🚫 Analyst Downgrade")
+
+        # LOGIC ENGINE
+        st.markdown("#### 🎯 Verdict:")
+        if is_insider and is_rebound:
+            st.success("🚀 **STRONG BUY SIGNAL:** Insider Buying + Oversold is the classic 'Swing Trade' setup (Like Nike/Tim Cook).")
+        elif is_bad_earn and is_downgrade:
+            st.error("🛑 **STRONG SELL SIGNAL:** Bad news is stacking up. Do not catch the falling knife.")
+        elif is_insider:
+            st.success("✅ **Positive Signal:** Insider confidence is usually bullish.")
+        else:
+            st.info("⚪ **Neutral:** No major catalyst selected.")
