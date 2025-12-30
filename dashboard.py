@@ -5,7 +5,7 @@ import numpy as np
 from scipy.stats import norm
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
-import requests
+import time
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="Options Command Center", layout="wide", page_icon="🚀")
@@ -43,29 +43,19 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- HELPER FUNCTIONS (WITH STEALTH MODE) ---
+# --- HELPER FUNCTIONS ---
 
-def get_session():
-    """Creates a browser-like session to fool Yahoo Finance."""
-    session = requests.Session()
-    # This User-Agent mimics a real Chrome browser on Windows
-    session.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    })
-    return session
-
-@st.cache_data(ttl=600) # Cache for 10 minutes to reduce requests
+@st.cache_data(ttl=300) # Cache data for 5 minutes
 def get_stock_data(ticker_symbol):
-    session = get_session()
-    stock = yf.Ticker(ticker_symbol, session=session)
+    # REMOVED the session code that caused the crash
+    stock = yf.Ticker(ticker_symbol)
     history = stock.history(period="5d")
     info = stock.info
     return stock, history, info
 
-@st.cache_data(ttl=600) # Cache for 10 minutes
+@st.cache_data(ttl=300) # Cache data for 5 minutes
 def get_option_chain(ticker_symbol, date):
-    session = get_session()
-    stock = yf.Ticker(ticker_symbol, session=session)
+    stock = yf.Ticker(ticker_symbol)
     opt_chain = stock.option_chain(date)
     calls = opt_chain.calls
     calls['type'] = 'call'
@@ -260,7 +250,6 @@ if ticker:
 
     except Exception as e:
         if "Too Many Requests" in str(e):
-            st.error("🚦 Yahoo Finance is still blocking the Cloud IP. Please wait 5-10 minutes.")
-            st.info("💡 **Pro Tip:** This happens because Streamlit Cloud is a shared computer. If this keeps happening, you might need to run this code on your own laptop (Localhost) to get your own private IP.")
+             st.error("🚦 Yahoo is still blocking the request. Wait 1 min and click 'Force Refresh Data'.")
         else:
             st.error(f"Waiting for inputs... ({e})")
