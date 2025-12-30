@@ -5,6 +5,7 @@ import numpy as np
 from scipy.stats import norm
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
+import time
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="Options Command Center", layout="wide", page_icon="🚀")
@@ -41,12 +42,24 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- HELPER FUNCTIONS ---
+# --- HELPER FUNCTIONS (NOW WITH CACHING) ---
+
+@st.cache_data(ttl=300) # ⚡ CACHING ADDED: Remembers data for 300 seconds (5 mins)
 def get_stock_data(ticker_symbol):
     stock = yf.Ticker(ticker_symbol)
     history = stock.history(period="5d")
     info = stock.info
     return stock, history, info
+
+@st.cache_data(ttl=300) # ⚡ CACHING ADDED
+def get_option_chain(ticker_symbol, date):
+    stock = yf.Ticker(ticker_symbol)
+    opt_chain = stock.option_chain(date)
+    calls = opt_chain.calls
+    calls['type'] = 'call'
+    puts = opt_chain.puts
+    puts['type'] = 'put'
+    return pd.concat([calls, puts]), calls, puts
 
 def calculate_greeks(S, K, T, r, sigma, option_type='call'):
     if T <= 0 or sigma <= 0: return 0, 0, 0
@@ -57,7 +70,6 @@ def calculate_greeks(S, K, T, r, sigma, option_type='call'):
     else:
         delta = norm.cdf(d1) - 1
     gamma = norm.pdf(d1) / (S * sigma * np.sqrt(T))
-    # Theta (Annual)
     term1 = -(S * sigma * norm.pdf(d1)) / (2 * np.sqrt(T))
     term2 = r * K * np.exp(-r * T) * norm.cdf(d2)
     theta_annual = term1 - term2
@@ -136,6 +148,7 @@ strike_price = st.sidebar.number_input("Strike Price ($)", value=63.0)
 
 if ticker:
     try:
+        # Use cached function for stock data
         stock, history, info = get_stock_data(ticker)
         current_price = info.get('currentPrice', history['Close'].iloc[-1])
         prev_close = info.get('previousClose', history['Close'].iloc[-2])
@@ -143,10 +156,8 @@ if ticker:
         expirations = stock.options
         selected_date = st.sidebar.selectbox("Expiration Date", expirations)
         
-        opt_chain = stock.option_chain(selected_date)
-        calls = opt_chain.calls; calls['type'] = 'call'
-        puts = opt_chain.puts; puts['type'] = 'put'
-        full_chain = pd.concat([calls, puts])
+        # Use cached function for options chain
+        full_chain, calls, puts = get_option_chain(ticker, selected_date)
         
         specific_contract = calls.iloc[(calls['strike'] - strike_price).abs().argsort()[:1]]
         contract_iv = specific_contract.iloc[0]['impliedVolatility']
@@ -180,7 +191,6 @@ if ticker:
             fig_whale = plot_whale_activity(calls, strike_price)
             st.pyplot(fig_whale)
 
-        # --- RESTORED TAB 6 (ALL TOOLS) ---
         with tab6:
             st.header("Risk & Profit Hub")
             expiry_dt = datetime.strptime(selected_date, "%Y-%m-%d")
@@ -189,19 +199,15 @@ if ticker:
             
             d, g, t = calculate_greeks(current_price, strike_price, days_left/365, 0.045, contract_iv)
             
-            # 1. METRICS
             c1, c2, c3 = st.columns(3)
             c1.metric("Delta", f"{d:.2f}")
             c2.metric("Gamma", f"{g:.3f}")
             c3.metric("Theta", f"{t:.3f}")
             
-            # 2. THE GRAPH (IT IS BACK!)
             fig_greeks = plot_greeks_curve(current_price, strike_price, days_left, contract_iv)
             st.pyplot(fig_greeks)
             
             st.markdown("---")
-            
-            # 3. PROFIT CALCULATOR (IT IS BACK!)
             st.subheader("🎯 Profit Target Calculator")
             col_calc1, col_calc2 = st.columns([1, 2])
             with col_calc1:
@@ -222,8 +228,6 @@ if ticker:
                     st.warning("⚠️ Delta is 0 (Data unavailable). Cannot calculate target.")
             
             st.markdown("---")
-
-            # 4. HOLIDAY CALCULATOR (KEPT)
             st.subheader("🗓️ Holiday Decay Calculator")
             holidays = st.number_input("Days market is closed", value=1, step=1)
             est_loss = abs(t) * holidays * 100
@@ -242,4 +246,8 @@ if ticker:
             except: st.write("No news found.")
 
     except Exception as e:
-        st.error(f"Waiting for inputs... ({e})")
+        # If rate limited, sleep briefly then try to display a nicer message
+        if "Too Many Requests" in str(e):
+            st.error("🚦 Traffic Jam! Too many requests to Yahoo. Please wait 1 minute and refresh.")
+        else:
+            st.error(f"Waiting for inputs... ({e})")
