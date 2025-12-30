@@ -9,27 +9,43 @@ from datetime import datetime, timedelta
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="Options Command Center", layout="wide", page_icon="🚀")
 
-# --- CUSTOM CSS ---
+# --- PASSWORD PROTECTION ---
+def check_password():
+    """Returns `True` if the user had the correct password."""
+    def password_entered():
+        if st.session_state["password"] == st.secrets["passwords"]["main_password"]:
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]  # don't store password
+        else:
+            st.session_state["password_correct"] = False
+
+    if "password_correct" not in st.session_state:
+        # First run, show input for password.
+        st.text_input("🔑 Enter Password", type="password", on_change=password_entered, key="password")
+        return False
+    elif not st.session_state["password_correct"]:
+        # Password incorrect, show input again.
+        st.text_input("🔑 Enter Password", type="password", on_change=password_entered, key="password")
+        st.error("😕 Password incorrect")
+        return False
+    else:
+        # Password correct.
+        return True
+
+if not check_password():
+    st.stop()  # Stop here if password is wrong
+
+# --- APP BEGINS HERE (Only runs if password is correct) ---
+
 st.markdown("""
 <style>
-    .metric-card {
-        background-color: #0e1117;
-        border: 1px solid #262730;
-        padding: 20px;
-        border-radius: 10px;
-        color: white;
-    }
-    .profit-box {
-        background-color: #1E3D59;
-        padding: 20px;
-        border-radius: 10px;
-        border-left: 5px solid #00FF7F;
-    }
+    .metric-card { background-color: #0e1117; border: 1px solid #262730; padding: 20px; border-radius: 10px; color: white; }
+    .profit-box { background-color: #1E3D59; padding: 20px; border-radius: 10px; border-left: 5px solid #00FF7F; }
+    .theta-box { background-color: #330000; padding: 20px; border-radius: 10px; border-left: 5px solid #FF4B4B; }
 </style>
 """, unsafe_allow_html=True)
 
 # --- HELPER FUNCTIONS ---
-
 def get_stock_data(ticker_symbol):
     stock = yf.Ticker(ticker_symbol)
     history = stock.history(period="5d")
@@ -37,51 +53,31 @@ def get_stock_data(ticker_symbol):
     return stock, history, info
 
 def calculate_greeks(S, K, T, r, sigma, option_type='call'):
-    if T <= 0 or sigma <= 0: return 0, 0
+    """Calculates Delta, Gamma, AND Theta."""
+    if T <= 0 or sigma <= 0: return 0, 0, 0
+    
     d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
+    d2 = d1 - sigma * np.sqrt(T)
+    
+    # Delta
     if option_type == 'call':
         delta = norm.cdf(d1)
     else:
         delta = norm.cdf(d1) - 1
+        
+    # Gamma
     gamma = norm.pdf(d1) / (S * sigma * np.sqrt(T))
-    return delta, gamma
+    
+    # Theta (Annual) - Simplified Black-Scholes
+    term1 = -(S * sigma * norm.pdf(d1)) / (2 * np.sqrt(T))
+    term2 = r * K * np.exp(-r * T) * norm.cdf(d2)
+    theta_annual = term1 - term2
+    theta_daily = theta_annual / 365.0
+    
+    return delta, gamma, theta_daily
 
-def plot_greeks_curve(current_price, strike, days_left, iv, risk_free=0.045):
-    fig, ax1 = plt.subplots(figsize=(10, 5))
-    prices = np.linspace(strike * 0.8, strike * 1.2, 100)
-    T = max(days_left / 365.0, 0.001)
-    deltas = []
-    gammas = []
-    for p in prices:
-        d, g = calculate_greeks(p, strike, T, risk_free, iv)
-        deltas.append(d)
-        gammas.append(g)
-    
-    ax1.plot(prices, deltas, color='#4DA6FF', linewidth=3, label='Delta (Speed)')
-    ax1.set_xlabel('Stock Price', color='white')
-    ax1.set_ylabel('Delta', color='#4DA6FF', fontsize=12, fontweight='bold')
-    ax1.tick_params(axis='y', labelcolor='#4DA6FF', colors='white')
-    ax1.tick_params(axis='x', colors='white')
-    ax1.set_ylim(0, 1)
-    
-    ax2 = ax1.twinx()
-    ax2.plot(prices, gammas, color='#00FF7F', linewidth=2, linestyle='--', label='Gamma (Acceleration)')
-    ax2.set_ylabel('Gamma', color='#00FF7F', fontsize=12, fontweight='bold')
-    ax2.tick_params(axis='y', labelcolor='#00FF7F', colors='white')
-    
-    curr_d, curr_g = calculate_greeks(current_price, strike, T, risk_free, iv)
-    ax1.scatter([current_price], [curr_d], color='white', edgecolor='#4DA6FF', s=100, zorder=10, label='You Are Here')
-    
-    ax1.set_title(f"Speed (Delta) vs Acceleration (Gamma)", color='white')
-    ax1.grid(True, alpha=0.1)
-    fig.patch.set_facecolor('#0E1117')
-    ax1.set_facecolor('#0E1117')
-    return fig
-
-# --- NEW FUNCTION: WHALE PLOT ---
 def plot_whale_activity(calls_df, current_strike):
-    """Plots Volume vs OI for surrounding strikes"""
-    # Filter for strikes near our target (e.g., +/- 2 strikes)
+    """Plots Volume vs OI"""
     strikes = sorted(calls_df['strike'].unique())
     try:
         idx = strikes.index(current_strike)
@@ -89,33 +85,19 @@ def plot_whale_activity(calls_df, current_strike):
         end_idx = min(len(strikes), idx + 3)
         relevant_strikes = strikes[start_idx:end_idx]
     except:
-        relevant_strikes = strikes[:5] # Fallback
+        relevant_strikes = strikes[:5]
         
     subset = calls_df[calls_df['strike'].isin(relevant_strikes)].copy()
-    
-    # Setup Plot
     fig, ax = plt.subplots(figsize=(10, 5))
     x = np.arange(len(subset['strike']))
     width = 0.35
-    
-    # Bar 1: Open Interest (Yesterday/History) - Blue
     ax.bar(x - width/2, subset['openInterest'], width, label='Open Interest (Yesterday)', color='#4DA6FF', alpha=0.6)
-    
-    # Bar 2: Volume (Today/Action) - Green
     ax.bar(x + width/2, subset['volume'], width, label='Volume (Today)', color='#00FF7F')
-    
-    # Styling
-    ax.set_xticks(x)
-    ax.set_xticklabels(subset['strike'])
+    ax.set_xticks(x); ax.set_xticklabels(subset['strike'])
     ax.set_title("Whale Detector: Yesterday (OI) vs Today (Vol)", color='white')
-    ax.set_xlabel("Strike Price", color='white')
-    ax.set_ylabel("Number of Contracts", color='white')
     ax.legend(facecolor='#262730', labelcolor='white')
-    ax.tick_params(colors='white')
-    ax.grid(axis='y', alpha=0.1)
-    fig.patch.set_facecolor('#0E1117')
-    ax.set_facecolor('#0E1117')
-    
+    ax.tick_params(colors='white'); ax.grid(axis='y', alpha=0.1)
+    fig.patch.set_facecolor('#0E1117'); ax.set_facecolor('#0E1117')
     return fig
 
 def calculate_max_pain(options_chain):
@@ -132,110 +114,91 @@ def calculate_max_pain(options_chain):
     return df_pain.loc[df_pain['total_loss'].idxmin()]['strike']
 
 # --- MAIN APP ---
-if st.sidebar.button("Run Dashboard") or True: 
-    ticker = st.sidebar.text_input("Ticker Symbol", value="NKE").upper()
-    strike_price = st.sidebar.number_input("Strike Price ($)", value=61.0)
-    
-    if ticker:
-        try:
-            stock, history, info = get_stock_data(ticker)
-            current_price = info.get('currentPrice', history['Close'].iloc[-1])
-            prev_close = info.get('previousClose', history['Close'].iloc[-2])
-            
-            expirations = stock.options
-            selected_date = st.sidebar.selectbox("Expiration Date", expirations)
-            
-            opt_chain = stock.option_chain(selected_date)
-            calls = opt_chain.calls; calls['type'] = 'call'
-            puts = opt_chain.puts; puts['type'] = 'put'
-            full_chain = pd.concat([calls, puts])
-            
-            specific_contract = calls.iloc[(calls['strike'] - strike_price).abs().argsort()[:1]]
-            contract_iv = specific_contract.iloc[0]['impliedVolatility']
-            contract_volume = specific_contract.iloc[0]['volume'] if not np.isnan(specific_contract.iloc[0]['volume']) else 0
-            contract_oi = specific_contract.iloc[0]['openInterest'] if not np.isnan(specific_contract.iloc[0]['openInterest']) else 0
+ticker = st.sidebar.text_input("Ticker Symbol", value="NKE").upper()
+strike_price = st.sidebar.number_input("Strike Price ($)", value=63.0) # Updated default for you
 
-            # --- HEADER ---
-            st.title(f"📊 {ticker} Trade Command Center")
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Current Price", f"${current_price:.2f}", f"{current_price - prev_close:.2f}")
-            col2.metric("Target Strike", f"${strike_price:.2f}")
-            col3.metric("Selected Expiration", selected_date)
+if ticker:
+    try:
+        stock, history, info = get_stock_data(ticker)
+        current_price = info.get('currentPrice', history['Close'].iloc[-1])
+        prev_close = info.get('previousClose', history['Close'].iloc[-2])
+        
+        expirations = stock.options
+        selected_date = st.sidebar.selectbox("Expiration Date", expirations)
+        
+        opt_chain = stock.option_chain(selected_date)
+        calls = opt_chain.calls; calls['type'] = 'call'
+        puts = opt_chain.puts; puts['type'] = 'put'
+        full_chain = pd.concat([calls, puts])
+        
+        specific_contract = calls.iloc[(calls['strike'] - strike_price).abs().argsort()[:1]]
+        contract_iv = specific_contract.iloc[0]['impliedVolatility']
+        contract_volume = specific_contract.iloc[0]['volume'] if not np.isnan(specific_contract.iloc[0]['volume']) else 0
+        
+        # --- HEADER ---
+        st.title(f"📊 {ticker} Command Center 🔒")
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Current Price", f"${current_price:.2f}", f"{current_price - prev_close:.2f}")
+        col2.metric("Your Strike", f"${strike_price:.2f}")
+        col3.metric("Selected Expiration", selected_date)
+        st.markdown("---")
+
+        # --- TABS ---
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+            "1. Price", "2. Volume", "3. IV", "4. Rule of 16", 
+            "5. Whale Detector", "6. Greeks & Holiday Calc", "7. Max Pain", "8. News"
+        ])
+
+        with tab1:
+            st.line_chart(history['Close'])
+            gap = current_price - prev_close
+            if abs(gap) < 0.50: st.success("✅ Stable Open")
+            else: st.warning("⚠️ Volatile Open")
+
+        with tab2: st.metric("Volume", f"{info.get('volume', 0):,}")
+        with tab3: st.metric("Implied Volatility", f"{contract_iv * 100:.2f}%")
+        with tab4: st.metric("Expected Daily Move", f"${(contract_iv * 100 / 16) / 100 * current_price:.2f}")
+
+        with tab5:
+            st.header("Whale Detector")
+            fig_whale = plot_whale_activity(calls, strike_price)
+            st.pyplot(fig_whale)
+
+        # --- UPDATED TAB 6: GREEKS + HOLIDAY CALCULATOR ---
+        with tab6:
+            st.header("Risk Calculator")
+            expiry_dt = datetime.strptime(selected_date, "%Y-%m-%d")
+            days_left = (expiry_dt - datetime.now()).days
+            if days_left < 0: days_left = 0
+            
+            # Calculate Greeks
+            d, g, t = calculate_greeks(current_price, strike_price, days_left/365, 0.045, contract_iv)
+            
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Delta (Speed)", f"{d:.2f}")
+            c2.metric("Gamma (Accel)", f"{g:.3f}")
+            c3.metric("Theta (Daily Decay)", f"{t:.3f}") # Usually negative
+            
             st.markdown("---")
+            st.markdown("### 🗓️ Holiday Decay Calculator")
+            st.write("Markets are closed on Thursday (Jan 1). Time decay still happens.")
+            
+            holidays = st.number_input("Days market is closed (incl. weekends)", value=1, step=1)
+            est_loss = abs(t) * holidays * 100 # x100 for 1 contract
+            
+            st.markdown(f"""
+            <div class='theta-box'>
+                <h4>📉 The "Holiday Tax"</h4>
+                <p>If the stock price stays exactly the same at ${current_price:.2f}...</p>
+                <p>You will lose approximately <b>${est_loss:.2f} per contract</b> just from holding through the holiday.</p>
+            </div>
+            """, unsafe_allow_html=True)
 
-            # --- TABS ---
-            tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
-                "1. Price", "2. Volume", "3. IV", "4. Rule of 16", 
-                "5. 🐋 Whale Detector", "6. Greeks (Calculator)", "7. Max Pain", "8. News"
-            ])
+        with tab7: st.metric("Max Pain", f"${calculate_max_pain(full_chain):.2f}")
+        with tab8:
+            try: 
+                for item in stock.news[:3]: st.markdown(f"- [{item['title']}]({item['link']})")
+            except: st.write("No news found.")
 
-            with tab1:
-                gap = current_price - prev_close
-                st.metric("Price Gap", f"${gap:.2f}")
-                # Simple Price Chart for context
-                st.line_chart(history['Close'])
-                if abs(gap) < 0.50: st.success("✅ Stable Open")
-                else: st.warning("⚠️ Volatile Open")
-
-            with tab2:
-                st.metric("Volume", f"{info.get('volume', 0):,}")
-
-            with tab3:
-                iv_pct = contract_iv * 100
-                st.metric("Implied Volatility", f"{iv_pct:.2f}%")
-
-            with tab4:
-                daily_move = (iv_pct / 16) / 100 * current_price
-                st.metric("Expected Daily Move", f"${daily_move:.2f}")
-
-            # --- NEW WHALE DETECTOR TAB ---
-            with tab5:
-                st.header("Yesterday (OI) vs. Today (Vol)")
-                st.write("Compare the **Blue Bars (History)** with **Green Bars (Action Today)**.")
-                
-                # Plot the graph
-                fig_whale = plot_whale_activity(calls, strike_price)
-                st.pyplot(fig_whale)
-                
-                st.info("""
-                **How to read this:**
-                - **High Blue / Low Green:** Boring. Old positions simply holding.
-                - **Low Blue / High Green:** 🚨 **ALERT:** New money flooding in!
-                - **Green jumping from Low Strike to High Strike:** The Whales are Rolling Up.
-                """)
-
-            with tab6:
-                st.header("Speed (Delta) & Acceleration (Gamma)")
-                expiry_dt = datetime.strptime(selected_date, "%Y-%m-%d")
-                days_left = (expiry_dt - datetime.now()).days
-                if days_left < 0: days_left = 0
-                d, g = calculate_greeks(current_price, strike_price, days_left/365, 0.045, contract_iv)
-                c1, c2 = st.columns(2)
-                c1.metric("Current Delta", f"{d:.2f}")
-                c2.metric("Current Gamma", f"{g:.3f}")
-                fig = plot_greeks_curve(current_price, strike_price, days_left, contract_iv)
-                st.pyplot(fig)
-                st.markdown("---")
-                st.markdown("### 🎯 Profit Target Calculator")
-                col_calc1, col_calc2 = st.columns([1, 2])
-                with col_calc1:
-                    desired_profit = st.number_input("Desired Profit ($)", value=50, step=10)
-                with col_calc2:
-                    if d > 0:
-                        price_change_needed = desired_profit / 100
-                        stock_move_needed = price_change_needed / d
-                        target_stock_price = current_price + stock_move_needed
-                        st.markdown(f"<div class='profit-box'><b>Target Stock Price: ${target_stock_price:.2f}</b><br>(Move needed: +${stock_move_needed:.2f})</div>", unsafe_allow_html=True)
-
-            with tab7:
-                pain = calculate_max_pain(full_chain)
-                st.metric("Max Pain", f"${pain:.2f}")
-
-            with tab8:
-                try:
-                    for item in stock.news[:3]:
-                        st.markdown(f"- [{item['title']}]({item['link']})")
-                except: st.write("No news found.")
-
-        except Exception as e:
-            st.error(f"Waiting for inputs... ({e})")
+    except Exception as e:
+        st.error(f"Waiting for inputs... ({e})")
