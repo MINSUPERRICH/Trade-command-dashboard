@@ -7,6 +7,8 @@ import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 import time
 import random
+import google.generativeai as genai
+from PIL import Image
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="Options Command Center", layout="wide", page_icon="🚀")
@@ -47,25 +49,23 @@ st.markdown("""
 # --- HELPER FUNCTIONS ---
 
 def fetch_with_retry(func, *args, retries=3):
-    """Retries a function if it hits a Rate Limit error."""
     for i in range(retries):
         try:
             return func(*args)
         except Exception as e:
             if "Too Many Requests" in str(e) or "404" in str(e):
-                time.sleep((i + 1) * 2) # Wait 2s, 4s, 6s
+                time.sleep((i + 1) * 2)
                 continue
             raise e
     return func(*args)
 
-# 1. CACHE ONLY DATA (Serializable objects like Dicts and DataFrames)
 @st.cache_data(ttl=900) 
 def get_stock_history_and_info(ticker_symbol):
     def _get():
         stock = yf.Ticker(ticker_symbol)
         history = stock.history(period="5d")
         info = stock.info
-        return history, info # Return ONLY data, not the 'stock' object
+        return history, info
     return fetch_with_retry(_get)
 
 @st.cache_data(ttl=900)
@@ -78,10 +78,9 @@ def get_option_chain_data(ticker_symbol, date):
         puts = opt_chain.puts
         puts['type'] = 'put'
         full = pd.concat([calls, puts])
-        return full, calls, puts # Return ONLY dataframes
+        return full, calls, puts
     return fetch_with_retry(_get)
 
-# 2. NON-CACHED CONNECTION (Fast/Cheap to create)
 def get_ticker_object(ticker_symbol):
     return yf.Ticker(ticker_symbol)
 
@@ -168,8 +167,8 @@ def calculate_max_pain(options_chain):
 
 # --- MAIN APP ---
 st.sidebar.markdown("## ⚙️ Settings")
-ticker = st.sidebar.text_input("Ticker Symbol", value="NKE").upper()
-strike_price = st.sidebar.number_input("Strike Price ($)", value=63.0)
+ticker = st.sidebar.text_input("Ticker Symbol", value="PEP").upper()
+strike_price = st.sidebar.number_input("Strike Price ($)", value=148.0)
 
 if st.sidebar.button("🔄 Force Refresh Data"):
     st.cache_data.clear()
@@ -177,32 +176,22 @@ if st.sidebar.button("🔄 Force Refresh Data"):
 
 if ticker:
     try:
-        # Create non-cached ticker for expiration list
         stock_conn = get_ticker_object(ticker)
-        
-        # 1. Fetch Stock Data (Cached)
         with st.spinner('Fetching market data...'):
             history, info = get_stock_history_and_info(ticker)
-            
-            # Get real-time price if available, else use close
             current_price = info.get('currentPrice', history['Close'].iloc[-1])
             prev_close = info.get('previousClose', history['Close'].iloc[-2])
             
-            # Fetch Expirations (Fast, usually doesn't need cache or retry)
             expirations = stock_conn.options
             if not expirations:
-                st.error("No options data found for this ticker.")
+                st.error("No options data found.")
                 st.stop()
-                
             selected_date = st.sidebar.selectbox("Expiration Date", expirations)
             
-            # 2. Fetch Option Chain (Cached)
             full_chain, calls, puts = get_option_chain_data(ticker, selected_date)
-            
             specific_contract = calls.iloc[(calls['strike'] - strike_price).abs().argsort()[:1]]
             contract_iv = specific_contract.iloc[0]['impliedVolatility']
         
-        # --- DISPLAY DASHBOARD ---
         st.title(f"📊 {ticker} Command Center 🔒")
         col1, col2, col3 = st.columns(3)
         col1.metric("Current Price", f"${current_price:.2f}", f"{current_price - prev_close:.2f}")
@@ -210,9 +199,10 @@ if ticker:
         col3.metric("Selected Expiration", selected_date)
         st.markdown("---")
 
-        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+        # --- TABS ---
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
             "1. Price", "2. Volume", "3. IV", "4. Rule of 16", 
-            "5. Whale Detector", "6. Risk & Profit", "7. Max Pain", "8. News"
+            "5. Whale Detector", "6. Risk & Profit", "7. Max Pain", "8. News", "9. 🤖 AI Analyst"
         ])
 
         with tab1:
@@ -235,17 +225,13 @@ if ticker:
             expiry_dt = datetime.strptime(selected_date, "%Y-%m-%d")
             days_left = (expiry_dt - datetime.now()).days
             if days_left < 0: days_left = 0
-            
             d, g, t = calculate_greeks(current_price, strike_price, days_left/365, 0.045, contract_iv)
-            
             c1, c2, c3 = st.columns(3)
             c1.metric("Delta", f"{d:.2f}")
             c2.metric("Gamma", f"{g:.3f}")
             c3.metric("Theta", f"{t:.3f}")
-            
             fig_greeks = plot_greeks_curve(current_price, strike_price, days_left, contract_iv)
             st.pyplot(fig_greeks)
-            
             st.markdown("---")
             st.subheader("🎯 Profit Target Calculator")
             col_calc1, col_calc2 = st.columns([1, 2])
@@ -256,27 +242,14 @@ if ticker:
                     price_change_needed = desired_profit / 100
                     stock_move_needed = price_change_needed / d
                     target_stock_price = current_price + stock_move_needed
-                    st.markdown(f"""
-                    <div class='profit-box'>
-                        To make <b>${desired_profit}</b> per contract:<br>
-                        Stock must reach: <b>${target_stock_price:.2f}</b><br>
-                        (Move needed: +${stock_move_needed:.2f})
-                    </div>
-                    """, unsafe_allow_html=True)
+                    st.markdown(f"<div class='profit-box'>Target Stock Price: <b>${target_stock_price:.2f}</b><br>(Move: +${stock_move_needed:.2f})</div>", unsafe_allow_html=True)
                 else:
                     st.warning("⚠️ Delta is 0. Cannot calculate target.")
-            
             st.markdown("---")
             st.subheader("🗓️ Holiday Decay Calculator")
             holidays = st.number_input("Days market is closed", value=1, step=1)
             est_loss = abs(t) * holidays * 100
-            st.markdown(f"""
-            <div class='theta-box'>
-                <h4>📉 The "Holiday Tax"</h4>
-                If holding for {holidays} closed day(s):<br>
-                Estimated Loss: <b>${est_loss:.2f} per contract</b>
-            </div>
-            """, unsafe_allow_html=True)
+            st.markdown(f"<div class='theta-box'>Estimated Loss: <b>${est_loss:.2f} per contract</b></div>", unsafe_allow_html=True)
 
         with tab7: st.metric("Max Pain", f"${calculate_max_pain(full_chain):.2f}")
         with tab8:
@@ -284,9 +257,44 @@ if ticker:
                 for item in stock_conn.news[:3]: st.markdown(f"- [{item['title']}]({item['link']})")
             except: st.write("No news found.")
 
+        # --- NEW TAB 9: AI ANALYST (SECURE) ---
+        with tab9:
+            st.header("🤖 AI Chart Analyst")
+            st.write("Upload a screenshot. The app will use your **Secured API Key**.")
+            
+            uploaded_file = st.file_uploader("Upload Screenshot", type=["jpg", "png", "jpeg"])
+            
+            if uploaded_file is not None:
+                image = Image.open(uploaded_file)
+                st.image(image, caption="Uploaded Chart", use_container_width=True)
+                
+                if st.button("Analyze Image"):
+                    # CHECK IF KEY EXISTS IN SECRETS
+                    if "api_keys" in st.secrets and "gemini" in st.secrets["api_keys"]:
+                        secure_key = st.secrets["api_keys"]["gemini"]
+                        
+                        with st.spinner("🤖 Gemini is thinking..."):
+                            try:
+                                genai.configure(api_key=secure_key)
+                                model = genai.GenerativeModel('gemini-1.5-flash')
+                                prompt = """
+                                You are an expert options trader. Analyze this chart image.
+                                1. Describe the visible trend or pattern (e.g., Whale Wall, Curve, Cliff).
+                                2. Identify warning signs or bullish signals.
+                                3. Give a clear 'Trader's Verdict': Bullish, Bearish, or Neutral?
+                                """
+                                response = model.generate_content([prompt, image])
+                                st.markdown("### 📝 Analysis Report")
+                                st.write(response.text)
+                                st.success("Analysis Complete!")
+                            except Exception as e:
+                                st.error(f"Error: {e}")
+                    else:
+                        st.error("❌ API Key not found! Please check your Streamlit Secrets settings.")
+
     except Exception as e:
         if "Too Many Requests" in str(e):
-             st.error("🚦 Traffic Jam. Retrying automatically... please wait.")
+             st.error("🚦 Traffic Jam. Retrying... wait.")
              time.sleep(2)
              st.rerun()
         else:
