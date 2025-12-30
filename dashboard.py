@@ -6,6 +6,7 @@ from scipy.stats import norm
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 import time
+import random
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="Options Command Center", layout="wide", page_icon="🚀")
@@ -43,25 +44,42 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- HELPER FUNCTIONS ---
+# --- HELPER FUNCTIONS WITH RETRY LOGIC ---
 
-@st.cache_data(ttl=300) # Cache data for 5 minutes
+def fetch_with_retry(func, *args, retries=3):
+    """Tries to fetch data. If blocked, waits and tries again."""
+    for i in range(retries):
+        try:
+            return func(*args)
+        except Exception as e:
+            if "Too Many Requests" in str(e) or "404" in str(e):
+                wait_time = (i + 1) * 2 + random.uniform(0, 1) # Wait 2s, 4s, 6s
+                time.sleep(wait_time)
+                continue
+            else:
+                raise e
+    return func(*args) # Final attempt
+
+@st.cache_data(ttl=900) # Cache for 15 minutes to stay safe
 def get_stock_data(ticker_symbol):
-    # REMOVED the session code that caused the crash
-    stock = yf.Ticker(ticker_symbol)
-    history = stock.history(period="5d")
-    info = stock.info
-    return stock, history, info
+    def _get():
+        stock = yf.Ticker(ticker_symbol)
+        history = stock.history(period="5d")
+        info = stock.info
+        return stock, history, info
+    return fetch_with_retry(_get)
 
-@st.cache_data(ttl=300) # Cache data for 5 minutes
+@st.cache_data(ttl=900) # Cache for 15 minutes
 def get_option_chain(ticker_symbol, date):
-    stock = yf.Ticker(ticker_symbol)
-    opt_chain = stock.option_chain(date)
-    calls = opt_chain.calls
-    calls['type'] = 'call'
-    puts = opt_chain.puts
-    puts['type'] = 'put'
-    return pd.concat([calls, puts]), calls, puts
+    def _get():
+        stock = yf.Ticker(ticker_symbol)
+        opt_chain = stock.option_chain(date)
+        calls = opt_chain.calls
+        calls['type'] = 'call'
+        puts = opt_chain.puts
+        puts['type'] = 'put'
+        return pd.concat([calls, puts]), calls, puts
+    return fetch_with_retry(_get)
 
 def calculate_greeks(S, K, T, r, sigma, option_type='call'):
     if T <= 0 or sigma <= 0: return 0, 0, 0
@@ -152,20 +170,22 @@ strike_price = st.sidebar.number_input("Strike Price ($)", value=63.0)
 # Add a manual refresh button to force a retry if blocked
 if st.sidebar.button("🔄 Force Refresh Data"):
     st.cache_data.clear()
+    st.rerun()
 
 if ticker:
     try:
-        stock, history, info = get_stock_data(ticker)
-        current_price = info.get('currentPrice', history['Close'].iloc[-1])
-        prev_close = info.get('previousClose', history['Close'].iloc[-2])
-        
-        expirations = stock.options
-        selected_date = st.sidebar.selectbox("Expiration Date", expirations)
-        
-        full_chain, calls, puts = get_option_chain(ticker, selected_date)
-        
-        specific_contract = calls.iloc[(calls['strike'] - strike_price).abs().argsort()[:1]]
-        contract_iv = specific_contract.iloc[0]['impliedVolatility']
+        with st.spinner('Fetching data... (If this takes time, we are retrying automatically)'):
+            stock, history, info = get_stock_data(ticker)
+            current_price = info.get('currentPrice', history['Close'].iloc[-1])
+            prev_close = info.get('previousClose', history['Close'].iloc[-2])
+            
+            expirations = stock.options
+            selected_date = st.sidebar.selectbox("Expiration Date", expirations)
+            
+            full_chain, calls, puts = get_option_chain(ticker, selected_date)
+            
+            specific_contract = calls.iloc[(calls['strike'] - strike_price).abs().argsort()[:1]]
+            contract_iv = specific_contract.iloc[0]['impliedVolatility']
         
         st.title(f"📊 {ticker} Command Center 🔒")
         col1, col2, col3 = st.columns(3)
@@ -249,7 +269,4 @@ if ticker:
             except: st.write("No news found.")
 
     except Exception as e:
-        if "Too Many Requests" in str(e):
-             st.error("🚦 Yahoo is still blocking the request. Wait 1 min and click 'Force Refresh Data'.")
-        else:
-            st.error(f"Waiting for inputs... ({e})")
+        st.error(f"🚦 Data Traffic Jam. Retrying automatically... ({e})")
