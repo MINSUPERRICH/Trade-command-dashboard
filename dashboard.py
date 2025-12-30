@@ -257,40 +257,55 @@ if ticker:
                 for item in stock_conn.news[:3]: st.markdown(f"- [{item['title']}]({item['link']})")
             except: st.write("No news found.")
 
-        # --- NEW TAB 9: AI ANALYST (SECURE) ---
+        # --- UPDATED TAB 9: MULTI-FILE SUPPORT ---
         with tab9:
             st.header("🤖 AI Chart Analyst")
-            st.write("Upload a screenshot. The app will use your **Secured API Key**.")
+            st.write("Upload screenshots of your charts. The app will use your **Secured API Key**.")
             
-            uploaded_file = st.file_uploader("Upload Screenshot", type=["jpg", "png", "jpeg"])
+            # ALLOW MULTIPLE FILES (Updated Line)
+            uploaded_files = st.file_uploader("Upload Screenshots", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
             
-            if uploaded_file is not None:
-                image = Image.open(uploaded_file)
-                st.image(image, caption="Uploaded Chart", use_container_width=True)
+            if uploaded_files:
+                # Display all images
+                images = []
+                cols = st.columns(len(uploaded_files))
+                for i, file in enumerate(uploaded_files):
+                    img = Image.open(file)
+                    images.append(img)
+                    with cols[i]:
+                        st.image(img, caption=f"Chart {i+1}", use_container_width=True)
                 
-                if st.button("Analyze Image"):
-                    # CHECK IF KEY EXISTS IN SECRETS
+                if st.button("Analyze Images"):
                     if "api_keys" in st.secrets and "gemini" in st.secrets["api_keys"]:
                         secure_key = st.secrets["api_keys"]["gemini"]
                         
-                        with st.spinner("🤖 Gemini is thinking..."):
+                        with st.spinner("🤖 Gemini is studying your charts..."):
                             try:
                                 genai.configure(api_key=secure_key)
+                                
+                                # Use a safe fallback model if Flash fails
                                 model = genai.GenerativeModel('gemini-1.5-flash')
+                                
                                 prompt = """
-                                You are an expert options trader. Analyze this chart image.
-                                1. Describe the visible trend or pattern (e.g., Whale Wall, Curve, Cliff).
-                                2. Identify warning signs or bullish signals.
+                                You are an expert options trader. Analyze these trading chart images together.
+                                1. Describe the key trends (e.g., Whale Wall, S-Curve, Support Levels).
+                                2. Identify any conflicts (e.g., Good curve but bad volume?).
                                 3. Give a clear 'Trader's Verdict': Bullish, Bearish, or Neutral?
                                 """
-                                response = model.generate_content([prompt, image])
+                                
+                                # Send Prompt + List of Images
+                                content = [prompt] + images
+                                response = model.generate_content(content)
+                                
                                 st.markdown("### 📝 Analysis Report")
                                 st.write(response.text)
                                 st.success("Analysis Complete!")
+                                
                             except Exception as e:
                                 st.error(f"Error: {e}")
+                                st.info("💡 Tip: If you see a '404' error, make sure you updated your requirements.txt file!")
                     else:
-                        st.error("❌ API Key not found! Please check your Streamlit Secrets settings.")
+                        st.error("❌ API Key not found! Please check your Streamlit Secrets.")
 
     except Exception as e:
         if "Too Many Requests" in str(e):
