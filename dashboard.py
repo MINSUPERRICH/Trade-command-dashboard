@@ -44,33 +44,32 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- HELPER FUNCTIONS WITH RETRY LOGIC ---
+# --- HELPER FUNCTIONS ---
 
 def fetch_with_retry(func, *args, retries=3):
-    """Tries to fetch data. If blocked, waits and tries again."""
+    """Retries a function if it hits a Rate Limit error."""
     for i in range(retries):
         try:
             return func(*args)
         except Exception as e:
             if "Too Many Requests" in str(e) or "404" in str(e):
-                wait_time = (i + 1) * 2 + random.uniform(0, 1) # Wait 2s, 4s, 6s
-                time.sleep(wait_time)
+                time.sleep((i + 1) * 2) # Wait 2s, 4s, 6s
                 continue
-            else:
-                raise e
-    return func(*args) # Final attempt
+            raise e
+    return func(*args)
 
-@st.cache_data(ttl=900) # Cache for 15 minutes to stay safe
-def get_stock_data(ticker_symbol):
+# 1. CACHE ONLY DATA (Serializable objects like Dicts and DataFrames)
+@st.cache_data(ttl=900) 
+def get_stock_history_and_info(ticker_symbol):
     def _get():
         stock = yf.Ticker(ticker_symbol)
         history = stock.history(period="5d")
         info = stock.info
-        return stock, history, info
+        return history, info # Return ONLY data, not the 'stock' object
     return fetch_with_retry(_get)
 
-@st.cache_data(ttl=900) # Cache for 15 minutes
-def get_option_chain(ticker_symbol, date):
+@st.cache_data(ttl=900)
+def get_option_chain_data(ticker_symbol, date):
     def _get():
         stock = yf.Ticker(ticker_symbol)
         opt_chain = stock.option_chain(date)
@@ -78,8 +77,13 @@ def get_option_chain(ticker_symbol, date):
         calls['type'] = 'call'
         puts = opt_chain.puts
         puts['type'] = 'put'
-        return pd.concat([calls, puts]), calls, puts
+        full = pd.concat([calls, puts])
+        return full, calls, puts # Return ONLY dataframes
     return fetch_with_retry(_get)
+
+# 2. NON-CACHED CONNECTION (Fast/Cheap to create)
+def get_ticker_object(ticker_symbol):
+    return yf.Ticker(ticker_symbol)
 
 def calculate_greeks(S, K, T, r, sigma, option_type='call'):
     if T <= 0 or sigma <= 0: return 0, 0, 0
@@ -167,26 +171,38 @@ st.sidebar.markdown("## ⚙️ Settings")
 ticker = st.sidebar.text_input("Ticker Symbol", value="NKE").upper()
 strike_price = st.sidebar.number_input("Strike Price ($)", value=63.0)
 
-# Add a manual refresh button to force a retry if blocked
 if st.sidebar.button("🔄 Force Refresh Data"):
     st.cache_data.clear()
     st.rerun()
 
 if ticker:
     try:
-        with st.spinner('Fetching data... (If this takes time, we are retrying automatically)'):
-            stock, history, info = get_stock_data(ticker)
+        # Create non-cached ticker for expiration list
+        stock_conn = get_ticker_object(ticker)
+        
+        # 1. Fetch Stock Data (Cached)
+        with st.spinner('Fetching market data...'):
+            history, info = get_stock_history_and_info(ticker)
+            
+            # Get real-time price if available, else use close
             current_price = info.get('currentPrice', history['Close'].iloc[-1])
             prev_close = info.get('previousClose', history['Close'].iloc[-2])
             
-            expirations = stock.options
+            # Fetch Expirations (Fast, usually doesn't need cache or retry)
+            expirations = stock_conn.options
+            if not expirations:
+                st.error("No options data found for this ticker.")
+                st.stop()
+                
             selected_date = st.sidebar.selectbox("Expiration Date", expirations)
             
-            full_chain, calls, puts = get_option_chain(ticker, selected_date)
+            # 2. Fetch Option Chain (Cached)
+            full_chain, calls, puts = get_option_chain_data(ticker, selected_date)
             
             specific_contract = calls.iloc[(calls['strike'] - strike_price).abs().argsort()[:1]]
             contract_iv = specific_contract.iloc[0]['impliedVolatility']
         
+        # --- DISPLAY DASHBOARD ---
         st.title(f"📊 {ticker} Command Center 🔒")
         col1, col2, col3 = st.columns(3)
         col1.metric("Current Price", f"${current_price:.2f}", f"{current_price - prev_close:.2f}")
@@ -265,8 +281,13 @@ if ticker:
         with tab7: st.metric("Max Pain", f"${calculate_max_pain(full_chain):.2f}")
         with tab8:
             try: 
-                for item in stock.news[:3]: st.markdown(f"- [{item['title']}]({item['link']})")
+                for item in stock_conn.news[:3]: st.markdown(f"- [{item['title']}]({item['link']})")
             except: st.write("No news found.")
 
     except Exception as e:
-        st.error(f"🚦 Data Traffic Jam. Retrying automatically... ({e})")
+        if "Too Many Requests" in str(e):
+             st.error("🚦 Traffic Jam. Retrying automatically... please wait.")
+             time.sleep(2)
+             st.rerun()
+        else:
+            st.error(f"Waiting for inputs... ({e})")
