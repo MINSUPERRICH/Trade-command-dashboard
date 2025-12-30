@@ -5,7 +5,7 @@ import numpy as np
 from scipy.stats import norm
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
-import time
+import requests
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="Options Command Center", layout="wide", page_icon="🚀")
@@ -16,7 +16,7 @@ def check_password():
     def password_entered():
         if st.session_state["password"] == st.secrets["passwords"]["main_password"]:
             st.session_state["password_correct"] = True
-            del st.session_state["password"]  # don't store password
+            del st.session_state["password"]
         else:
             st.session_state["password_correct"] = False
 
@@ -39,21 +39,33 @@ st.markdown("""
     .metric-card { background-color: #0e1117; border: 1px solid #262730; padding: 20px; border-radius: 10px; color: white; }
     .profit-box { background-color: #1E3D59; padding: 20px; border-radius: 10px; border-left: 5px solid #00FF7F; margin-bottom: 20px;}
     .theta-box { background-color: #330000; padding: 20px; border-radius: 10px; border-left: 5px solid #FF4B4B; }
+    .stButton>button { width: 100%; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- HELPER FUNCTIONS (NOW WITH CACHING) ---
+# --- HELPER FUNCTIONS (WITH STEALTH MODE) ---
 
-@st.cache_data(ttl=300) # ⚡ CACHING ADDED: Remembers data for 300 seconds (5 mins)
+def get_session():
+    """Creates a browser-like session to fool Yahoo Finance."""
+    session = requests.Session()
+    # This User-Agent mimics a real Chrome browser on Windows
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    })
+    return session
+
+@st.cache_data(ttl=600) # Cache for 10 minutes to reduce requests
 def get_stock_data(ticker_symbol):
-    stock = yf.Ticker(ticker_symbol)
+    session = get_session()
+    stock = yf.Ticker(ticker_symbol, session=session)
     history = stock.history(period="5d")
     info = stock.info
     return stock, history, info
 
-@st.cache_data(ttl=300) # ⚡ CACHING ADDED
+@st.cache_data(ttl=600) # Cache for 10 minutes
 def get_option_chain(ticker_symbol, date):
-    stock = yf.Ticker(ticker_symbol)
+    session = get_session()
+    stock = yf.Ticker(ticker_symbol, session=session)
     opt_chain = stock.option_chain(date)
     calls = opt_chain.calls
     calls['type'] = 'call'
@@ -143,12 +155,16 @@ def calculate_max_pain(options_chain):
     return df_pain.loc[df_pain['total_loss'].idxmin()]['strike']
 
 # --- MAIN APP ---
+st.sidebar.markdown("## ⚙️ Settings")
 ticker = st.sidebar.text_input("Ticker Symbol", value="NKE").upper()
 strike_price = st.sidebar.number_input("Strike Price ($)", value=63.0)
 
+# Add a manual refresh button to force a retry if blocked
+if st.sidebar.button("🔄 Force Refresh Data"):
+    st.cache_data.clear()
+
 if ticker:
     try:
-        # Use cached function for stock data
         stock, history, info = get_stock_data(ticker)
         current_price = info.get('currentPrice', history['Close'].iloc[-1])
         prev_close = info.get('previousClose', history['Close'].iloc[-2])
@@ -156,13 +172,11 @@ if ticker:
         expirations = stock.options
         selected_date = st.sidebar.selectbox("Expiration Date", expirations)
         
-        # Use cached function for options chain
         full_chain, calls, puts = get_option_chain(ticker, selected_date)
         
         specific_contract = calls.iloc[(calls['strike'] - strike_price).abs().argsort()[:1]]
         contract_iv = specific_contract.iloc[0]['impliedVolatility']
         
-        # --- HEADER ---
         st.title(f"📊 {ticker} Command Center 🔒")
         col1, col2, col3 = st.columns(3)
         col1.metric("Current Price", f"${current_price:.2f}", f"{current_price - prev_close:.2f}")
@@ -170,7 +184,6 @@ if ticker:
         col3.metric("Selected Expiration", selected_date)
         st.markdown("---")
 
-        # --- TABS ---
         tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
             "1. Price", "2. Volume", "3. IV", "4. Rule of 16", 
             "5. Whale Detector", "6. Risk & Profit", "7. Max Pain", "8. News"
@@ -225,7 +238,7 @@ if ticker:
                     </div>
                     """, unsafe_allow_html=True)
                 else:
-                    st.warning("⚠️ Delta is 0 (Data unavailable). Cannot calculate target.")
+                    st.warning("⚠️ Delta is 0. Cannot calculate target.")
             
             st.markdown("---")
             st.subheader("🗓️ Holiday Decay Calculator")
@@ -246,8 +259,8 @@ if ticker:
             except: st.write("No news found.")
 
     except Exception as e:
-        # If rate limited, sleep briefly then try to display a nicer message
         if "Too Many Requests" in str(e):
-            st.error("🚦 Traffic Jam! Too many requests to Yahoo. Please wait 1 minute and refresh.")
+            st.error("🚦 Yahoo Finance is still blocking the Cloud IP. Please wait 5-10 minutes.")
+            st.info("💡 **Pro Tip:** This happens because Streamlit Cloud is a shared computer. If this keeps happening, you might need to run this code on your own laptop (Localhost) to get your own private IP.")
         else:
             st.error(f"Waiting for inputs... ({e})")
