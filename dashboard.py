@@ -3,12 +3,13 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 from scipy.stats import norm
+import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="Options Command Center", layout="wide", page_icon="🚀")
 
-# --- CUSTOM CSS FOR "DASHBOARD" FEEL ---
+# --- CUSTOM CSS ---
 st.markdown("""
 <style>
     .metric-card {
@@ -18,304 +19,223 @@ st.markdown("""
         border-radius: 10px;
         color: white;
     }
-    .pass { color: #00FF7F; font-weight: bold; }
-    .fail { color: #FF4B4B; font-weight: bold; }
-    .warning { color: #FFA500; font-weight: bold; }
-    .news-title { font-size: 16px; font-weight: bold; color: #4DA6FF; text-decoration: none;}
-    .news-meta { font-size: 12px; color: #888; margin-bottom: 10px;}
+    .profit-box {
+        background-color: #1E3D59;
+        padding: 20px;
+        border-radius: 10px;
+        border-left: 5px solid #00FF7F;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 # --- HELPER FUNCTIONS ---
 
 def get_stock_data(ticker_symbol):
-    """Fetches real-time stock info and history."""
     stock = yf.Ticker(ticker_symbol)
-    history = stock.history(period="5d")  # Get recent days for gap check
+    history = stock.history(period="5d")
     info = stock.info
     return stock, history, info
 
-def calculate_delta(S, K, T, r, sigma, option_type='call'):
-    """
-    Calculates Option Delta using Black-Scholes formula.
-    """
-    if T <= 0 or sigma <= 0: return 0
+def calculate_greeks(S, K, T, r, sigma, option_type='call'):
+    if T <= 0 or sigma <= 0: return 0, 0
     d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
     if option_type == 'call':
-        return norm.cdf(d1)
+        delta = norm.cdf(d1)
     else:
-        return norm.cdf(d1) - 1
+        delta = norm.cdf(d1) - 1
+    gamma = norm.pdf(d1) / (S * sigma * np.sqrt(T))
+    return delta, gamma
+
+def plot_greeks_curve(current_price, strike, days_left, iv, risk_free=0.045):
+    fig, ax1 = plt.subplots(figsize=(10, 5))
+    prices = np.linspace(strike * 0.8, strike * 1.2, 100)
+    T = max(days_left / 365.0, 0.001)
+    deltas = []
+    gammas = []
+    for p in prices:
+        d, g = calculate_greeks(p, strike, T, risk_free, iv)
+        deltas.append(d)
+        gammas.append(g)
+    
+    ax1.plot(prices, deltas, color='#4DA6FF', linewidth=3, label='Delta (Speed)')
+    ax1.set_xlabel('Stock Price', color='white')
+    ax1.set_ylabel('Delta', color='#4DA6FF', fontsize=12, fontweight='bold')
+    ax1.tick_params(axis='y', labelcolor='#4DA6FF', colors='white')
+    ax1.tick_params(axis='x', colors='white')
+    ax1.set_ylim(0, 1)
+    
+    ax2 = ax1.twinx()
+    ax2.plot(prices, gammas, color='#00FF7F', linewidth=2, linestyle='--', label='Gamma (Acceleration)')
+    ax2.set_ylabel('Gamma', color='#00FF7F', fontsize=12, fontweight='bold')
+    ax2.tick_params(axis='y', labelcolor='#00FF7F', colors='white')
+    
+    curr_d, curr_g = calculate_greeks(current_price, strike, T, risk_free, iv)
+    ax1.scatter([current_price], [curr_d], color='white', edgecolor='#4DA6FF', s=100, zorder=10, label='You Are Here')
+    
+    ax1.set_title(f"Speed (Delta) vs Acceleration (Gamma)", color='white')
+    ax1.grid(True, alpha=0.1)
+    fig.patch.set_facecolor('#0E1117')
+    ax1.set_facecolor('#0E1117')
+    return fig
+
+# --- NEW FUNCTION: WHALE PLOT ---
+def plot_whale_activity(calls_df, current_strike):
+    """Plots Volume vs OI for surrounding strikes"""
+    # Filter for strikes near our target (e.g., +/- 2 strikes)
+    strikes = sorted(calls_df['strike'].unique())
+    try:
+        idx = strikes.index(current_strike)
+        start_idx = max(0, idx - 2)
+        end_idx = min(len(strikes), idx + 3)
+        relevant_strikes = strikes[start_idx:end_idx]
+    except:
+        relevant_strikes = strikes[:5] # Fallback
+        
+    subset = calls_df[calls_df['strike'].isin(relevant_strikes)].copy()
+    
+    # Setup Plot
+    fig, ax = plt.subplots(figsize=(10, 5))
+    x = np.arange(len(subset['strike']))
+    width = 0.35
+    
+    # Bar 1: Open Interest (Yesterday/History) - Blue
+    ax.bar(x - width/2, subset['openInterest'], width, label='Open Interest (Yesterday)', color='#4DA6FF', alpha=0.6)
+    
+    # Bar 2: Volume (Today/Action) - Green
+    ax.bar(x + width/2, subset['volume'], width, label='Volume (Today)', color='#00FF7F')
+    
+    # Styling
+    ax.set_xticks(x)
+    ax.set_xticklabels(subset['strike'])
+    ax.set_title("Whale Detector: Yesterday (OI) vs Today (Vol)", color='white')
+    ax.set_xlabel("Strike Price", color='white')
+    ax.set_ylabel("Number of Contracts", color='white')
+    ax.legend(facecolor='#262730', labelcolor='white')
+    ax.tick_params(colors='white')
+    ax.grid(axis='y', alpha=0.1)
+    fig.patch.set_facecolor('#0E1117')
+    ax.set_facecolor('#0E1117')
+    
+    return fig
 
 def calculate_max_pain(options_chain):
-    """Calculates the strike price where option writers lose the least money."""
     strikes = options_chain['strike'].unique()
     max_pain_data = []
-
     for strike in strikes:
         calls_at_strike = options_chain[options_chain['type'] == 'call']
         puts_at_strike = options_chain[options_chain['type'] == 'put']
-        
         call_loss = calls_at_strike.apply(lambda x: max(0, strike - x['strike']) * x['openInterest'], axis=1).sum()
         put_loss = puts_at_strike.apply(lambda x: max(0, x['strike'] - strike) * x['openInterest'], axis=1).sum()
-        
         max_pain_data.append({'strike': strike, 'total_loss': call_loss + put_loss})
-    
     df_pain = pd.DataFrame(max_pain_data)
     if df_pain.empty: return 0
     return df_pain.loc[df_pain['total_loss'].idxmin()]['strike']
 
-# --- SIDEBAR INPUTS ---
-st.sidebar.header("⚙️ Trade Settings")
-ticker = st.sidebar.text_input("Ticker Symbol", value="NKE").upper()
-
-strike_price = st.sidebar.number_input("Strike Price ($)", value=61.0)
-target_profit_move = st.sidebar.number_input("Target Stock Move ($)", value=2.0, help="How many dollars do you need the stock to move today?")
-
-# --- MAIN APP LOGIC ---
-
-if ticker:
-    try:
-        # 1. FETCH DATA
-        with st.spinner(f'Fetching data for {ticker}...'):
+# --- MAIN APP ---
+if st.sidebar.button("Run Dashboard") or True: 
+    ticker = st.sidebar.text_input("Ticker Symbol", value="NKE").upper()
+    strike_price = st.sidebar.number_input("Strike Price ($)", value=61.0)
+    
+    if ticker:
+        try:
             stock, history, info = get_stock_data(ticker)
             current_price = info.get('currentPrice', history['Close'].iloc[-1])
             prev_close = info.get('previousClose', history['Close'].iloc[-2])
             
-            # Get Options Dates
             expirations = stock.options
-            if not expirations:
-                st.error("No options data found.")
-                st.stop()
-                
             selected_date = st.sidebar.selectbox("Expiration Date", expirations)
             
-            # Get Option Chain for selected date
             opt_chain = stock.option_chain(selected_date)
-            calls = opt_chain.calls
-            calls['type'] = 'call'
-            puts = opt_chain.puts
-            puts['type'] = 'put'
+            calls = opt_chain.calls; calls['type'] = 'call'
+            puts = opt_chain.puts; puts['type'] = 'put'
             full_chain = pd.concat([calls, puts])
             
-            # Find specific contract user is interested in
             specific_contract = calls.iloc[(calls['strike'] - strike_price).abs().argsort()[:1]]
-            if specific_contract.empty:
-                st.warning("Strike price not found in chain.")
-                st.stop()
-            
-            contract_data = specific_contract.iloc[0]
-            contract_iv = contract_data['impliedVolatility']
-            contract_volume = contract_data['volume'] if not np.isnan(contract_data['volume']) else 0
-            contract_oi = contract_data['openInterest'] if not np.isnan(contract_data['openInterest']) else 0
-            
-    except Exception as e:
-        st.error(f"Error fetching data: {e}")
-        st.stop()
+            contract_iv = specific_contract.iloc[0]['impliedVolatility']
+            contract_volume = specific_contract.iloc[0]['volume'] if not np.isnan(specific_contract.iloc[0]['volume']) else 0
+            contract_oi = specific_contract.iloc[0]['openInterest'] if not np.isnan(specific_contract.iloc[0]['openInterest']) else 0
 
-    # --- DASHBOARD HEADER ---
-    st.title(f"📊 {ticker} Trade Command Center")
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Current Price", f"${current_price:.2f}", f"{current_price - prev_close:.2f}")
-    col2.metric("Target Strike", f"${strike_price:.2f}")
-    col3.metric("Selected Expiration", selected_date)
+            # --- HEADER ---
+            st.title(f"📊 {ticker} Trade Command Center")
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Current Price", f"${current_price:.2f}", f"{current_price - prev_close:.2f}")
+            col2.metric("Target Strike", f"${strike_price:.2f}")
+            col3.metric("Selected Expiration", selected_date)
+            st.markdown("---")
 
-    st.markdown("---")
+            # --- TABS ---
+            tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+                "1. Price", "2. Volume", "3. IV", "4. Rule of 16", 
+                "5. 🐋 Whale Detector", "6. Greeks (Calculator)", "7. Max Pain", "8. News"
+            ])
 
-    # --- THE 8 TABS (Updated) ---
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
-        "1. Price (Gap)", 
-        "2. Volume", 
-        "3. IV (Fear)", 
-        "4. Rule of 16", 
-        "5. Vol vs OI", 
-        "6. Delta (Odds)",
-        "💀 Max Pain",
-        "📰 Scenarios (News)"
-    ])
+            with tab1:
+                gap = current_price - prev_close
+                st.metric("Price Gap", f"${gap:.2f}")
+                # Simple Price Chart for context
+                st.line_chart(history['Close'])
+                if abs(gap) < 0.50: st.success("✅ Stable Open")
+                else: st.warning("⚠️ Volatile Open")
 
-    # ---------------- TAB 1: PRICE GAP ----------------
-    with tab1:
-        st.header("Price Gap Check")
-        gap = current_price - prev_close
-        gap_percent = (gap / prev_close) * 100
-        
-        st.metric("Overnight Gap", f"${gap:.2f}", f"{gap_percent:.2f}%")
-        
-        if abs(gap) < 0.50:
-            st.success("✅ PASSED: Gap is small (< $0.50). 'Rule of 16' is valid.")
-        elif gap < -1.00:
-            st.error("⚠️ WARNING: Big Gap Down. Watch your Stop Loss ($0.41) immediately!")
-        else:
-            st.info("ℹ️ NOTE: Significant Gap. Volatility is high.")
+            with tab2:
+                st.metric("Volume", f"{info.get('volume', 0):,}")
 
-    # ---------------- TAB 2: VOLUME ----------------
-    with tab2:
-        st.header("Stock Volume Check")
-        avg_vol = info.get('averageVolume', 0)
-        curr_vol = info.get('volume', 0)
-        
-        st.write(f"**Average Daily Volume:** {avg_vol:,}")
-        if curr_vol > 0:
-            st.write(f"**Current Volume:** {curr_vol:,}")
-        else:
-            st.write("*(Market might be closed or pre-market volume not available)*")
-            
-        st.info("💡 Look for 'Heavy Volume' at 9:35 AM to confirm the move is real.")
+            with tab3:
+                iv_pct = contract_iv * 100
+                st.metric("Implied Volatility", f"{iv_pct:.2f}%")
 
-    # ---------------- TAB 3: IV (FEAR) ----------------
-    with tab3:
-        st.header("Implied Volatility (IV) Check")
-        iv_percent = contract_iv * 100
-        st.metric("IV for your Strike", f"{iv_percent:.2f}%")
-        
-        if iv_percent < 20:
-            st.write("🧊 **Low IV:** Options are cheap, but stock might be boring.")
-        elif iv_percent > 50:
-            st.warning("🔥 **High IV:** Options are expensive. Be careful of 'IV Crush'.")
-        else:
-            st.success("✅ **Normal IV:** Good balance of risk/reward.")
+            with tab4:
+                daily_move = (iv_pct / 16) / 100 * current_price
+                st.metric("Expected Daily Move", f"${daily_move:.2f}")
 
-    # ---------------- TAB 4: RULE OF 16 ----------------
-    with tab4:
-        st.header("The Reality Check (Rule of 16)")
-        
-        daily_move_pct = iv_percent / 16
-        daily_move_dollar = current_price * (daily_move_pct / 100)
-        
-        col_a, col_b = st.columns(2)
-        with col_a:
-            st.metric("Expected Daily Move %", f"{daily_move_pct:.2f}%")
-            st.metric("Expected Daily Move $", f"${daily_move_dollar:.2f}")
-        
-        with col_b:
-            st.write(f"**Your Target Move:** ${target_profit_move:.2f}")
-            if target_profit_move > daily_move_dollar:
-                st.error(f"❌ **FAIL:** You need ${target_profit_move}, but market only expects ${daily_move_dollar:.2f}. Unlikely.")
-            else:
-                st.success(f"✅ **PASS:** Your target (${target_profit_move}) is within the expected range (${daily_move_dollar:.2f}).")
+            # --- NEW WHALE DETECTOR TAB ---
+            with tab5:
+                st.header("Yesterday (OI) vs. Today (Vol)")
+                st.write("Compare the **Blue Bars (History)** with **Green Bars (Action Today)**.")
+                
+                # Plot the graph
+                fig_whale = plot_whale_activity(calls, strike_price)
+                st.pyplot(fig_whale)
+                
+                st.info("""
+                **How to read this:**
+                - **High Blue / Low Green:** Boring. Old positions simply holding.
+                - **Low Blue / High Green:** 🚨 **ALERT:** New money flooding in!
+                - **Green jumping from Low Strike to High Strike:** The Whales are Rolling Up.
+                """)
 
-    # ---------------- TAB 5: VOL vs OI ----------------
-    with tab5:
-        st.header("Trend Check (New Money)")
-        col_x, col_y = st.columns(2)
-        col_x.metric("Today's Volume", f"{contract_volume:.0f}")
-        col_y.metric("Open Interest (Yesterday)", f"{contract_oi:.0f}")
-        
-        if contract_oi == 0:
-            ratio = 0
-        else:
-            ratio = contract_volume / contract_oi
-            
-        st.write(f"**Vol / OI Ratio:** {ratio:.2f}")
-        
-        if contract_volume > contract_oi:
-            st.success("✅ **PASS (Breakout Signal):** Volume > Open Interest. New money is flooding in!")
-        elif ratio > 0.5:
-             st.warning("⚠️ **WATCH:** Moderate activity.")
-        else:
-            st.error("❌ **FAIL:** Low Volume. Mostly old traders passing contracts around.")
+            with tab6:
+                st.header("Speed (Delta) & Acceleration (Gamma)")
+                expiry_dt = datetime.strptime(selected_date, "%Y-%m-%d")
+                days_left = (expiry_dt - datetime.now()).days
+                if days_left < 0: days_left = 0
+                d, g = calculate_greeks(current_price, strike_price, days_left/365, 0.045, contract_iv)
+                c1, c2 = st.columns(2)
+                c1.metric("Current Delta", f"{d:.2f}")
+                c2.metric("Current Gamma", f"{g:.3f}")
+                fig = plot_greeks_curve(current_price, strike_price, days_left, contract_iv)
+                st.pyplot(fig)
+                st.markdown("---")
+                st.markdown("### 🎯 Profit Target Calculator")
+                col_calc1, col_calc2 = st.columns([1, 2])
+                with col_calc1:
+                    desired_profit = st.number_input("Desired Profit ($)", value=50, step=10)
+                with col_calc2:
+                    if d > 0:
+                        price_change_needed = desired_profit / 100
+                        stock_move_needed = price_change_needed / d
+                        target_stock_price = current_price + stock_move_needed
+                        st.markdown(f"<div class='profit-box'><b>Target Stock Price: ${target_stock_price:.2f}</b><br>(Move needed: +${stock_move_needed:.2f})</div>", unsafe_allow_html=True)
 
-    # ---------------- TAB 6: DELTA (ODDS) ----------------
-    with tab6:
-        st.header("Odds Check (Delta)")
-        
-        expiry_dt = datetime.strptime(selected_date, "%Y-%m-%d")
-        days_to_expiry = (expiry_dt - datetime.now()).days
-        if days_to_expiry < 0: days_to_expiry = 0
-        T = days_to_expiry / 365.0
-        
-        delta = calculate_delta(current_price, strike_price, T, 0.045, contract_iv, 'call')
-        
-        st.metric("Delta (Win Probability)", f"{delta:.2f}")
-        
-        if delta < 0.30:
-            st.error(f"❌ **High Risk:** Only {delta*100:.0f}% probability of expiring ITM.")
-        elif delta > 0.70:
-            st.success(f"✅ **Safe (Deep ITM):** {delta*100:.0f}% probability.")
-        else:
-            st.success(f"✅ **Good Balance:** {delta*100:.0f}% probability. Standard swing trade.")
+            with tab7:
+                pain = calculate_max_pain(full_chain)
+                st.metric("Max Pain", f"${pain:.2f}")
 
-    # ---------------- TAB 7: MAX PAIN ----------------
-    with tab7:
-        st.header("💀 Max Pain (The Magnet)")
-        
-        pain_price = calculate_max_pain(full_chain)
-        
-        col_m1, col_m2 = st.columns(2)
-        col_m1.metric("Current Stock Price", f"${current_price:.2f}")
-        col_m2.metric("Max Pain Price", f"${pain_price:.2f}")
-        
-        diff = current_price - pain_price
-        if abs(diff) < 1.00:
-            st.warning("🧲 **MAGNET EFFECT:** Stock is pinned near Max Pain.")
-        elif current_price > pain_price:
-            st.info(f"📉 **Drag Risk:** Stock is ${diff:.2f} ABOVE Max Pain. Magnet might pull it down.")
-        else:
-            st.info(f"📈 **Lift Potential:** Stock is ${abs(diff):.2f} BELOW Max Pain. Magnet might pull it up.")
+            with tab8:
+                try:
+                    for item in stock.news[:3]:
+                        st.markdown(f"- [{item['title']}]({item['link']})")
+                except: st.write("No news found.")
 
-    # ---------------- TAB 8: SCENARIOS (NEWS) ----------------
-    with tab8:
-        st.header("📰 News & Catalyst Scenarios")
-
-        # 1. EARNINGS CHECKER (Try to fetch automatically)
-        st.subheader("1. Earnings Status")
-        try:
-            # Note: Fetching earnings dates can be tricky with free APIs, 
-            # we try to get the calendar or handle gracefully.
-            next_earn = "Unknown"
-            # Try getting news or calendar if available
-            cal = stock.calendar
-            if cal is not None and not cal.empty:
-                # Calendar format varies by yfinance version, usually has 'Earnings Date' or index
-                next_date = cal.iloc[0, 0] if not cal.empty else None
-                if next_date:
-                    st.write(f"**Next Earnings Date:** {next_date}")
-            else:
-                st.write("*(Earnings date not auto-detected. Check manually on Yahoo Finance)*")
-        except:
-            st.write("*(Earnings data unavailable via API)*")
-
-        st.markdown("---")
-
-        # 2. NEWS FEED
-        st.subheader("2. Recent News Feed (Look for 'Insider' or 'CEO')")
-        try:
-            news_list = stock.news
-            if news_list:
-                for item in news_list[:5]: # Show top 5
-                    title = item.get('title', 'No Title')
-                    link = item.get('link', '#')
-                    pub = item.get('publisher', 'Unknown')
-                    st.markdown(f"<a href='{link}' target='_blank' class='news-title'>{title}</a>", unsafe_allow_html=True)
-                    st.markdown(f"<div class='news-meta'>Source: {pub}</div>", unsafe_allow_html=True)
-            else:
-                st.write("No recent news found.")
-        except:
-            st.write("Could not fetch news.")
-
-        st.markdown("---")
-
-        # 3. MANUAL SCENARIO CHECKLIST
-        st.subheader("3. The 'Insider' Checklist")
-        st.write("Since computers can't always read 'Context', check these boxes if you see them in the news above:")
-        
-        col_check1, col_check2 = st.columns(2)
-        
-        with col_check1:
-            is_insider = st.checkbox("📢 Insider Buying (e.g. CEO bought shares)")
-            is_rebound = st.checkbox("📉 Stock dropped recently (Oversold)")
-        
-        with col_check2:
-            is_bad_earn = st.checkbox("⚠️ Bad Earnings Miss (< 7 days ago)")
-            is_downgrade = st.checkbox("🚫 Analyst Downgrade")
-
-        # LOGIC ENGINE
-        st.markdown("#### 🎯 Verdict:")
-        if is_insider and is_rebound:
-            st.success("🚀 **STRONG BUY SIGNAL:** Insider Buying + Oversold is the classic 'Swing Trade' setup (Like Nike/Tim Cook).")
-        elif is_bad_earn and is_downgrade:
-            st.error("🛑 **STRONG SELL SIGNAL:** Bad news is stacking up. Do not catch the falling knife.")
-        elif is_insider:
-            st.success("✅ **Positive Signal:** Insider confidence is usually bullish.")
-        else:
-            st.info("⚪ **Neutral:** No major catalyst selected.")
+        except Exception as e:
+            st.error(f"Waiting for inputs... ({e})")
