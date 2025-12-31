@@ -4,5 +4,5 @@ pandas
 numpy
 scipy
 matplotlib
-google-generativeai>=0.7.0
-Pillow
+google-generativeai
+plotly
