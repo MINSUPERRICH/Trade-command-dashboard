@@ -33,10 +33,9 @@ def check_password():
 if not check_password():
     st.stop()
 
-# --- CSS STYLING (FIXED COLORS HERE) ---
+# --- CSS STYLING ---
 st.markdown("""
 <style>
-    /* Added 'color: white' to ensure text is readable on dark backgrounds */
     .metric-card { background-color: #0e1117; border: 1px solid #262730; padding: 20px; border-radius: 10px; color: white; }
     .profit-box { background-color: #1E3D59; padding: 20px; border-radius: 10px; border-left: 5px solid #00FF7F; margin-bottom: 20px; color: white; }
     .theta-box { background-color: #330000; padding: 20px; border-radius: 10px; border-left: 5px solid #FF4B4B; color: white; }
@@ -197,9 +196,10 @@ if ticker:
         st.markdown("---")
 
         # --- TABS ---
-        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
             "1. Price", "2. Volume", "3. IV", "4. Rule of 16", 
-            "5. Whale Detector", "6. Risk & Profit", "7. Max Pain", "8. News", "9. 🤖 AI Trading Buddy"
+            "5. Whale Detector", "6. Risk & Profit", "7. Max Pain", "8. News", 
+            "9. 🤖 AI Chart Analyst", "10. 💬 Ask AI"
         ])
 
         with tab1:
@@ -243,7 +243,6 @@ if ticker:
                     price_change_needed = desired_profit / 100
                     stock_move_needed = price_change_needed / d
                     target_stock_price = current_price + stock_move_needed
-                    # Added style directly to div to be safe, plus global style above
                     st.markdown(f"""
                     <div class='profit-box' style='color: white;'>
                         Target Stock Price: <b>${target_stock_price:.2f}</b><br>
@@ -268,16 +267,16 @@ if ticker:
                 for item in stock_conn.news[:3]: st.markdown(f"- [{item['title']}]({item['link']})")
             except: st.write("No news found.")
 
-        # --- TAB 9: AI TRADING BUDDY ---
+        # --- TAB 9: AI CHART ANALYST (REVERTED TO NORMAL) ---
         with tab9:
-            st.header("🤖 AI Trading Buddy")
-            st.write("Upload your charts. I'll tell you what I really think.")
+            st.header("🤖 AI Chart Analyst")
+            st.write("Upload screenshots of your charts for analysis.")
             
             available_models = [
                 "models/gemini-2.0-flash-exp",
                 "models/gemini-2.0-flash",
             ]
-            selected_model = st.selectbox("🧠 Select Brain:", available_models, index=0)
+            selected_model = st.selectbox("🧠 Select Model:", available_models, index=0)
 
             uploaded_files = st.file_uploader("Upload Screenshots", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
             
@@ -295,36 +294,82 @@ if ticker:
                         secure_key = st.secrets["api_keys"]["gemini"]
                         genai.configure(api_key=secure_key)
 
-                        with st.spinner(f"🤖 {selected_model} is thinking..."):
+                        with st.spinner(f"🤖 Analyzing..."):
                             try:
                                 model = genai.GenerativeModel(selected_model)
                                 
+                                # --- STANDARD, PROFESSIONAL PROMPT ---
                                 prompt = """
-                                Act as a highly experienced, slightly cynical, but supportive senior options trader. 
-                                You are reviewing these charts for your junior partner (the user).
-                                
-                                Speak directly to the user (use "You" and "I").
-                                Do NOT write a formal report. Write a chat message.
-                                
-                                1. **The Hook:** Start with a reaction. (e.g., "Woah, look at that volume!" or "This looks messy...").
-                                2. **The "Real Talk":** Analyze the Whale Detector (Bars) and the Delta Curve. 
-                                   - If Green bars > Blue bars: Say "The bulls are awake."
-                                   - If Blue bars > Green bars: Say "It's a sleepy day. Walls are holding."
-                                   - If the Curve is a cliff: Warn them about "Binary Risk."
-                                3. **The Verdict:** specific advice. "If I were you, I would..." or "Be careful of..."
-                                
-                                Use emojis. Keep it under 200 words. Make it sound like a human text message.
+                                You are an expert financial analyst. Analyze these trading charts.
+                                1. Identify the key technical patterns (Support/Resistance, Volume profiles, Volatility curves).
+                                2. Assess the risk factors visible in the data.
+                                3. Provide a professional, objective summary of the market structure shown.
                                 """
                                 
                                 content = [prompt] + images
                                 response = model.generate_content(content)
-                                st.markdown("### 💬 Chat with Gemini")
-                                st.success(response.text)
+                                st.markdown("### 📝 Analysis Report")
+                                st.write(response.text)
                                 
                             except Exception as e:
-                                st.error(f"Error with {selected_model}: {e}")
+                                st.error(f"Error: {e}")
                     else:
-                        st.error("❌ API Key not found! Check Streamlit Secrets.")
+                        st.error("❌ API Key not found!")
+
+        # --- NEW TAB 10: Q&A WITH AI ---
+        with tab10:
+            st.header("💬 Ask AI")
+            st.write(f"Ask anything about **{ticker}**, Options, or your specific trade.")
+
+            user_question = st.text_input("Your Question:", placeholder="e.g. Is my Gamma risk high?")
+
+            if user_question:
+                if "api_keys" in st.secrets and "gemini" in st.secrets["api_keys"]:
+                    secure_key = st.secrets["api_keys"]["gemini"]
+                    genai.configure(api_key=secure_key)
+                    
+                    # PREPARE CONTEXT (Giving the AI "Eyes")
+                    # We send the current dashboard numbers so the AI knows what you are talking about.
+                    context_data = f"""
+                    CURRENT MARKET DATA:
+                    Ticker: {ticker}
+                    Stock Price: ${current_price:.2f}
+                    Strike Price: ${strike_price:.2f}
+                    Expiration: {selected_date}
+                    Implied Volatility: {contract_iv*100:.2f}%
+                    
+                    GREEKS:
+                    Delta: {d:.3f}
+                    Gamma: {g:.3f}
+                    Theta: {t:.3f}
+                    """
+
+                    with st.spinner("🤖 Thinking..."):
+                        try:
+                            model = genai.GenerativeModel("models/gemini-2.0-flash-exp")
+                            
+                            # PROMPT WITH CONTEXT
+                            prompt = f"""
+                            You are a helpful, professional options trading assistant.
+                            
+                            CONTEXT:
+                            {context_data}
+                            
+                            USER QUESTION:
+                            {user_question}
+                            
+                            ANSWER:
+                            Provide a clear, educational, and direct answer based on the context above.
+                            """
+                            
+                            response = model.generate_content(prompt)
+                            st.markdown("### 💡 Answer")
+                            st.write(response.text)
+                            
+                        except Exception as e:
+                            st.error(f"Error: {e}")
+                else:
+                    st.error("❌ API Key not found!")
 
     except Exception as e:
         if "Too Many Requests" in str(e):
