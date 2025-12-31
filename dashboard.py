@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 from scipy.stats import norm
 import matplotlib.pyplot as plt
-import plotly.graph_objects as go  # NEW: Interactive Graphing Library
+import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import time
 import random
@@ -106,7 +106,7 @@ def calculate_greeks(S, K, T, r, sigma, option_type='call'):
     theta_daily = theta_annual / 365.0
     return delta, gamma, theta_daily
 
-# --- NEW INTERACTIVE CHARTS (PLOTLY) ---
+# --- INTERACTIVE CHARTS (FIXED PAN/ZOOM) ---
 
 def plot_greeks_interactive(current_price, strike, days_left, iv, risk_free=0.045):
     prices = np.linspace(strike * 0.8, strike * 1.2, 100)
@@ -117,8 +117,6 @@ def plot_greeks_interactive(current_price, strike, days_left, iv, risk_free=0.04
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=prices, y=deltas, mode='lines', name='Delta (Speed)', line=dict(color='#4DA6FF', width=3)))
     fig.add_trace(go.Scatter(x=prices, y=gammas, mode='lines', name='Gamma (Acceleration)', line=dict(color='#00FF7F', width=2, dash='dash'), yaxis="y2"))
-    
-    # Current Position Marker
     curr_d, curr_g, _ = calculate_greeks(current_price, strike, T, risk_free, iv)
     fig.add_trace(go.Scatter(x=[current_price], y=[curr_d], mode='markers', name='You Are Here', marker=dict(color='white', size=12, line=dict(color='#4DA6FF', width=2))))
 
@@ -129,19 +127,17 @@ def plot_greeks_interactive(current_price, strike, days_left, iv, risk_free=0.04
         yaxis2=dict(title="Gamma", overlaying="y", side="right"),
         template="plotly_dark",
         hovermode="x unified",
+        dragmode='pan',  # Enables Click-to-Drag
         height=500
     )
     return fig
 
 def plot_simulation_interactive(S, K, days_left, iv, r=0.045, purchase_price=0):
     prices = np.linspace(S * 0.8, S * 1.2, 100)
-    
     T1 = max(days_left / 365.0, 0.0001)
     pnl_today = [black_scholes_price(p, K, T1, r, iv) - purchase_price for p in prices]
-    
     T2 = max((days_left / 2) / 365.0, 0.0001)
     pnl_half = [black_scholes_price(p, K, T2, r, iv) - purchase_price for p in prices]
-    
     T3 = 0.0001
     pnl_exp = [black_scholes_price(p, K, T3, r, iv) - purchase_price for p in prices]
 
@@ -154,12 +150,12 @@ def plot_simulation_interactive(S, K, days_left, iv, r=0.045, purchase_price=0):
     fig.add_vline(x=S, line_color="gray", line_dash="dash", annotation_text="Current Price")
 
     fig.update_layout(
-        title="🔮 Interactive Future Simulator (Scroll to Zoom)",
+        title="🔮 Interactive Future Simulator (Scroll Zoom + Click Drag)",
         xaxis_title="Stock Price ($)",
         yaxis_title="Estimated P&L ($)",
         template="plotly_dark",
         hovermode="x unified",
-        dragmode='zoom', # Allows zooming
+        dragmode='pan', # Enables Click-to-Drag
         height=600
     )
     return fig
@@ -168,7 +164,6 @@ def plot_flow_battle_interactive(calls, puts, current_strike):
     c_vol = calls[['strike', 'volume']].groupby('strike').sum().rename(columns={'volume': 'Call Vol'})
     p_vol = puts[['strike', 'volume']].groupby('strike').sum().rename(columns={'volume': 'Put Vol'})
     df = pd.merge(c_vol, p_vol, on='strike', how='outer').fillna(0)
-    
     strikes = sorted(df.index)
     try: idx = strikes.index(current_strike)
     except: idx = (np.abs(np.array(strikes) - current_strike)).argmin()
@@ -186,6 +181,7 @@ def plot_flow_battle_interactive(calls, puts, current_strike):
         barmode='group',
         template="plotly_dark",
         hovermode="x unified",
+        dragmode='pan',
         height=500
     )
     return fig
@@ -209,6 +205,7 @@ def plot_whale_activity_interactive(calls_df, current_strike):
         barmode='group',
         template="plotly_dark",
         hovermode="x unified",
+        dragmode='pan',
         height=500
     )
     return fig
@@ -284,7 +281,8 @@ if ticker:
         with tab5:
             st.header("Whale Detector")
             fig_whale = plot_whale_activity_interactive(calls, strike_price)
-            st.plotly_chart(fig_whale, use_container_width=True)
+            # ENABLED SCROLL ZOOM AND PAN
+            st.plotly_chart(fig_whale, use_container_width=True, config={'scrollZoom': True})
 
         with tab6:
             st.header("Risk & Profit Hub")
@@ -293,7 +291,8 @@ if ticker:
             c1.metric("Delta", f"{d:.2f}"); c2.metric("Gamma", f"{g:.3f}"); c3.metric("Theta", f"{t:.3f}")
             
             fig_greeks = plot_greeks_interactive(current_price, strike_price, days_left, contract_iv)
-            st.plotly_chart(fig_greeks, use_container_width=True)
+            # ENABLED SCROLL ZOOM AND PAN
+            st.plotly_chart(fig_greeks, use_container_width=True, config={'scrollZoom': True})
             
             st.markdown("---")
             st.subheader("🎯 Profit Target Calculator")
@@ -318,7 +317,6 @@ if ticker:
                 for item in stock_conn.news[:3]: st.markdown(f"- [{item['title']}]({item['link']})")
             except: st.write("No news found.")
 
-        # --- TAB 9: AI CHART ANALYST ---
         with tab9:
             st.header("🤖 AI Chart Analyst")
             st.write("Upload screenshots for expert battle analysis.")
@@ -340,7 +338,6 @@ if ticker:
                         except Exception as e: st.error(f"Error: {e}")
                 else: st.error("❌ API Key not found!")
 
-        # --- TAB 10: STRATEGY ENGINE ---
         with tab10:
             st.header("💬 AI Strategy Engine")
             col_comp1, col_comp2 = st.columns([1,3])
@@ -372,8 +369,9 @@ if ticker:
             st.header("🔮 Future P&L Simulator")
             st.write("Scroll UP on the chart to zoom in. Check for gaps between lines!")
             fig_sim = plot_simulation_interactive(current_price, strike_price, days_left, contract_iv, purchase_price=theo_price)
-            st.plotly_chart(fig_sim, use_container_width=True)
-            st.info("💡 **Hover** over any line to see the exact value. **Scroll** to zoom in.")
+            # ENABLED SCROLL ZOOM AND PAN
+            st.plotly_chart(fig_sim, use_container_width=True, config={'scrollZoom': True})
+            st.info("💡 **Hover** over any line to see the exact value. **Scroll** to zoom in. **Click & Drag** to move.")
 
         with tab12:
             st.header("🌊 Market Flow: Bulls vs Bears")
@@ -386,7 +384,8 @@ if ticker:
             st.markdown("---")
             st.subheader("⚔️ Interactive Battle Map")
             fig_flow = plot_flow_battle_interactive(calls, puts, strike_price)
-            st.plotly_chart(fig_flow, use_container_width=True)
+            # ENABLED SCROLL ZOOM AND PAN
+            st.plotly_chart(fig_flow, use_container_width=True, config={'scrollZoom': True})
 
     except Exception as e:
         if "Too Many Requests" in str(e):
