@@ -195,7 +195,7 @@ if ticker:
         col3.metric("Selected Expiration", selected_date)
         st.markdown("---")
 
-        # --- TABS ---
+        # --- TABS (ALL 9 RESTORED) ---
         tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
             "1. Price", "2. Volume", "3. IV", "4. Rule of 16", 
             "5. Whale Detector", "6. Risk & Profit", "7. Max Pain", "8. News", "9. 🤖 AI Analyst"
@@ -221,13 +221,18 @@ if ticker:
             expiry_dt = datetime.strptime(selected_date, "%Y-%m-%d")
             days_left = (expiry_dt - datetime.now()).days
             if days_left < 0: days_left = 0
-            d, g, t = calculate_greeks(current_price, strike_price, days/365, 0.045, contract_iv)
+            
+            # --- FIX: Changed 'days' to 'days_left' ---
+            d, g, t = calculate_greeks(current_price, strike_price, days_left/365, 0.045, contract_iv)
+            
             c1, c2, c3 = st.columns(3)
             c1.metric("Delta", f"{d:.2f}")
             c2.metric("Gamma", f"{g:.3f}")
             c3.metric("Theta", f"{t:.3f}")
+            
             fig_greeks = plot_greeks_curve(current_price, strike_price, days_left, contract_iv)
             st.pyplot(fig_greeks)
+            
             st.markdown("---")
             st.subheader("🎯 Profit Target Calculator")
             col_calc1, col_calc2 = st.columns([1, 2])
@@ -253,19 +258,17 @@ if ticker:
                 for item in stock_conn.news[:3]: st.markdown(f"- [{item['title']}]({item['link']})")
             except: st.write("No news found.")
 
-        # --- TAB 9: AI ANALYST (ULTIMATE EDITION) ---
+        # --- TAB 9: AI ANALYST ---
         with tab9:
             st.header("🤖 AI Chart Analyst")
             st.write("Upload screenshots of your charts (Whale Detector, Price, etc).")
             
             # --- MODEL SELECTOR ---
-            # I added the models from your list that are most likely to work with Images
             available_models = [
-                "models/gemini-2.0-flash-exp",   # Best for speed/images
-                "models/gemini-2.0-flash",       # Stable 2.0
-                "models/gemini-1.5-pro",         # High intelligence
-                "models/gemini-1.5-flash",       # Fast standard
-                "models/gemini-2.5-flash",       # Bleeding edge (if available)
+                "models/gemini-2.0-flash-exp",
+                "models/gemini-2.0-flash",
+                "models/gemini-1.5-pro",
+                "models/gemini-1.5-flash",
             ]
             selected_model = st.selectbox("🧠 Select Your AI Brain:", available_models, index=0)
 
@@ -287,10 +290,7 @@ if ticker:
 
                         with st.spinner(f"🤖 {selected_model} is analyzing..."):
                             try:
-                                # Use the model selected by the user
                                 model = genai.GenerativeModel(selected_model)
-                                
-                                # CONVERSATIONAL PROMPT
                                 prompt = """
                                 You are a professional, savvy, and slightly witty Options Trading Analyst. 
                                 Your job is to look at these trading charts and give me a "Real Talk" assessment.
