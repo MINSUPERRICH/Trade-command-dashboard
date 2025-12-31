@@ -33,12 +33,13 @@ def check_password():
 if not check_password():
     st.stop()
 
-# --- CSS STYLING ---
+# --- CSS STYLING (FIXED COLORS HERE) ---
 st.markdown("""
 <style>
+    /* Added 'color: white' to ensure text is readable on dark backgrounds */
     .metric-card { background-color: #0e1117; border: 1px solid #262730; padding: 20px; border-radius: 10px; color: white; }
-    .profit-box { background-color: #1E3D59; padding: 20px; border-radius: 10px; border-left: 5px solid #00FF7F; margin-bottom: 20px;}
-    .theta-box { background-color: #330000; padding: 20px; border-radius: 10px; border-left: 5px solid #FF4B4B; }
+    .profit-box { background-color: #1E3D59; padding: 20px; border-radius: 10px; border-left: 5px solid #00FF7F; margin-bottom: 20px; color: white; }
+    .theta-box { background-color: #330000; padding: 20px; border-radius: 10px; border-left: 5px solid #FF4B4B; color: white; }
     .stButton>button { width: 100%; }
 </style>
 """, unsafe_allow_html=True)
@@ -195,10 +196,10 @@ if ticker:
         col3.metric("Selected Expiration", selected_date)
         st.markdown("---")
 
-        # --- TABS (ALL 9 RESTORED) ---
+        # --- TABS ---
         tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
             "1. Price", "2. Volume", "3. IV", "4. Rule of 16", 
-            "5. Whale Detector", "6. Risk & Profit", "7. Max Pain", "8. News", "9. 🤖 AI Analyst"
+            "5. Whale Detector", "6. Risk & Profit", "7. Max Pain", "8. News", "9. 🤖 AI Trading Buddy"
         ])
 
         with tab1:
@@ -222,7 +223,6 @@ if ticker:
             days_left = (expiry_dt - datetime.now()).days
             if days_left < 0: days_left = 0
             
-            # --- FIX: Changed 'days' to 'days_left' ---
             d, g, t = calculate_greeks(current_price, strike_price, days_left/365, 0.045, contract_iv)
             
             c1, c2, c3 = st.columns(3)
@@ -243,14 +243,24 @@ if ticker:
                     price_change_needed = desired_profit / 100
                     stock_move_needed = price_change_needed / d
                     target_stock_price = current_price + stock_move_needed
-                    st.markdown(f"<div class='profit-box'>Target Stock Price: <b>${target_stock_price:.2f}</b><br>(Move: +${stock_move_needed:.2f})</div>", unsafe_allow_html=True)
+                    # Added style directly to div to be safe, plus global style above
+                    st.markdown(f"""
+                    <div class='profit-box' style='color: white;'>
+                        Target Stock Price: <b>${target_stock_price:.2f}</b><br>
+                        (Move: +${stock_move_needed:.2f})
+                    </div>
+                    """, unsafe_allow_html=True)
                 else:
                     st.warning("⚠️ Delta is 0. Cannot calculate target.")
             st.markdown("---")
             st.subheader("🗓️ Holiday Decay Calculator")
             holidays = st.number_input("Days market is closed", value=1, step=1)
             est_loss = abs(t) * holidays * 100
-            st.markdown(f"<div class='theta-box'>Estimated Loss: <b>${est_loss:.2f} per contract</b></div>", unsafe_allow_html=True)
+            st.markdown(f"""
+            <div class='theta-box' style='color: white;'>
+                Estimated Loss: <b>${est_loss:.2f} per contract</b>
+            </div>
+            """, unsafe_allow_html=True)
 
         with tab7: st.metric("Max Pain", f"${calculate_max_pain(full_chain):.2f}")
         with tab8:
@@ -258,19 +268,16 @@ if ticker:
                 for item in stock_conn.news[:3]: st.markdown(f"- [{item['title']}]({item['link']})")
             except: st.write("No news found.")
 
-        # --- TAB 9: AI ANALYST ---
+        # --- TAB 9: AI TRADING BUDDY ---
         with tab9:
-            st.header("🤖 AI Chart Analyst")
-            st.write("Upload screenshots of your charts (Whale Detector, Price, etc).")
+            st.header("🤖 AI Trading Buddy")
+            st.write("Upload your charts. I'll tell you what I really think.")
             
-            # --- MODEL SELECTOR ---
             available_models = [
                 "models/gemini-2.0-flash-exp",
                 "models/gemini-2.0-flash",
-                "models/gemini-1.5-pro",
-                "models/gemini-1.5-flash",
             ]
-            selected_model = st.selectbox("🧠 Select Your AI Brain:", available_models, index=0)
+            selected_model = st.selectbox("🧠 Select Brain:", available_models, index=0)
 
             uploaded_files = st.file_uploader("Upload Screenshots", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
             
@@ -288,28 +295,34 @@ if ticker:
                         secure_key = st.secrets["api_keys"]["gemini"]
                         genai.configure(api_key=secure_key)
 
-                        with st.spinner(f"🤖 {selected_model} is analyzing..."):
+                        with st.spinner(f"🤖 {selected_model} is thinking..."):
                             try:
                                 model = genai.GenerativeModel(selected_model)
-                                prompt = """
-                                You are a professional, savvy, and slightly witty Options Trading Analyst. 
-                                Your job is to look at these trading charts and give me a "Real Talk" assessment.
-
-                                1. **The Scene:** What is the main story here? (e.g., "The Whales are building a wall at $150").
-                                2. **The Risk:** Is there a cliff? Is the volume fake? Be honest.
-                                3. **The Verdict:** If this was your money, are you Bullish, Bearish, or Staying Away?
                                 
-                                Keep it conversational, actionable, and short. Don't be boring.
+                                prompt = """
+                                Act as a highly experienced, slightly cynical, but supportive senior options trader. 
+                                You are reviewing these charts for your junior partner (the user).
+                                
+                                Speak directly to the user (use "You" and "I").
+                                Do NOT write a formal report. Write a chat message.
+                                
+                                1. **The Hook:** Start with a reaction. (e.g., "Woah, look at that volume!" or "This looks messy...").
+                                2. **The "Real Talk":** Analyze the Whale Detector (Bars) and the Delta Curve. 
+                                   - If Green bars > Blue bars: Say "The bulls are awake."
+                                   - If Blue bars > Green bars: Say "It's a sleepy day. Walls are holding."
+                                   - If the Curve is a cliff: Warn them about "Binary Risk."
+                                3. **The Verdict:** specific advice. "If I were you, I would..." or "Be careful of..."
+                                
+                                Use emojis. Keep it under 200 words. Make it sound like a human text message.
                                 """
+                                
                                 content = [prompt] + images
                                 response = model.generate_content(content)
-                                st.markdown("### 📝 The Analyst's Report")
-                                st.write(response.text)
-                                st.success("Analysis Complete!")
+                                st.markdown("### 💬 Chat with Gemini")
+                                st.success(response.text)
                                 
                             except Exception as e:
                                 st.error(f"Error with {selected_model}: {e}")
-                                st.info("💡 Try selecting a different model from the dropdown above!")
                     else:
                         st.error("❌ API Key not found! Check Streamlit Secrets.")
 
