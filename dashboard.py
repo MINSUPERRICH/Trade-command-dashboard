@@ -199,7 +199,7 @@ if ticker:
         tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
             "1. Price", "2. Volume", "3. IV", "4. Rule of 16", 
             "5. Whale Detector", "6. Risk & Profit", "7. Max Pain", "8. News", 
-            "9. 🤖 AI Chart Analyst", "10. 💬 Ask AI"
+            "9. 🤖 Chart Analyst", "10. 💬 Strategy Engine"
         ])
 
         with tab1:
@@ -267,103 +267,93 @@ if ticker:
                 for item in stock_conn.news[:3]: st.markdown(f"- [{item['title']}]({item['link']})")
             except: st.write("No news found.")
 
-        # --- TAB 9: AI CHART ANALYST (REVERTED TO NORMAL) ---
+        # --- TAB 9: AI CHART ANALYST ---
         with tab9:
             st.header("🤖 AI Chart Analyst")
-            st.write("Upload screenshots of your charts for analysis.")
-            
-            available_models = [
-                "models/gemini-2.0-flash-exp",
-                "models/gemini-2.0-flash",
-            ]
+            st.write("Upload screenshots for visual analysis.")
+            available_models = ["models/gemini-2.0-flash-exp", "models/gemini-2.0-flash"]
             selected_model = st.selectbox("🧠 Select Model:", available_models, index=0)
 
             uploaded_files = st.file_uploader("Upload Screenshots", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
-            
-            if uploaded_files:
-                images = []
-                cols = st.columns(len(uploaded_files))
-                for i, file in enumerate(uploaded_files):
-                    img = Image.open(file)
-                    images.append(img)
-                    with cols[i]:
-                        st.image(img, caption=f"Chart {i+1}", use_container_width=True)
-                
-                if st.button("Analyze Images"):
-                    if "api_keys" in st.secrets and "gemini" in st.secrets["api_keys"]:
-                        secure_key = st.secrets["api_keys"]["gemini"]
-                        genai.configure(api_key=secure_key)
+            if uploaded_files and st.button("Analyze Images"):
+                if "api_keys" in st.secrets and "gemini" in st.secrets["api_keys"]:
+                    secure_key = st.secrets["api_keys"]["gemini"]
+                    genai.configure(api_key=secure_key)
+                    with st.spinner(f"🤖 Analyzing..."):
+                        try:
+                            model = genai.GenerativeModel(selected_model)
+                            prompt = "You are an expert financial analyst. Analyze these charts. Identify key patterns and risk."
+                            content = [prompt] + [Image.open(f) for f in uploaded_files]
+                            response = model.generate_content(content)
+                            st.markdown("### 📝 Analysis Report"); st.write(response.text)
+                        except Exception as e: st.error(f"Error: {e}")
+                else: st.error("❌ API Key not found!")
 
-                        with st.spinner(f"🤖 Analyzing..."):
-                            try:
-                                model = genai.GenerativeModel(selected_model)
-                                
-                                # --- STANDARD, PROFESSIONAL PROMPT ---
-                                prompt = """
-                                You are an expert financial analyst. Analyze these trading charts.
-                                1. Identify the key technical patterns (Support/Resistance, Volume profiles, Volatility curves).
-                                2. Assess the risk factors visible in the data.
-                                3. Provide a professional, objective summary of the market structure shown.
-                                """
-                                
-                                content = [prompt] + images
-                                response = model.generate_content(content)
-                                st.markdown("### 📝 Analysis Report")
-                                st.write(response.text)
-                                
-                            except Exception as e:
-                                st.error(f"Error: {e}")
-                    else:
-                        st.error("❌ API Key not found!")
-
-        # --- NEW TAB 10: Q&A WITH AI ---
+        # --- TAB 10: STRATEGY ENGINE (NEW COMPARISON FEATURE) ---
         with tab10:
-            st.header("💬 Ask AI")
-            st.write(f"Ask anything about **{ticker}**, Options, or your specific trade.")
+            st.header("💬 AI Strategy Engine")
+            st.write("Compare two strikes or ask complex questions.")
 
-            user_question = st.text_input("Your Question:", placeholder="e.g. Is my Gamma risk high?")
+            # 1. OPTIONAL: COMPARE STRIKE
+            col_comp1, col_comp2 = st.columns([1,3])
+            with col_comp1:
+                comp_strike = st.number_input("Compare with Strike ($) [Optional]", value=0.0, step=1.0)
+            
+            # 2. USER QUESTION
+            with col_comp2:
+                user_question = st.text_input("Your Question:", placeholder="e.g. Which strike is safer for a long-term hold?")
 
             if user_question:
                 if "api_keys" in st.secrets and "gemini" in st.secrets["api_keys"]:
                     secure_key = st.secrets["api_keys"]["gemini"]
                     genai.configure(api_key=secure_key)
                     
-                    # PREPARE CONTEXT (Giving the AI "Eyes")
-                    # We send the current dashboard numbers so the AI knows what you are talking about.
+                    # 3. BUILD CONTEXT (MAIN OPTION)
                     context_data = f"""
-                    CURRENT MARKET DATA:
-                    Ticker: {ticker}
-                    Stock Price: ${current_price:.2f}
-                    Strike Price: ${strike_price:.2f}
-                    Expiration: {selected_date}
-                    Implied Volatility: {contract_iv*100:.2f}%
-                    
-                    GREEKS:
-                    Delta: {d:.3f}
-                    Gamma: {g:.3f}
-                    Theta: {t:.3f}
+                    MAIN OPTION:
+                    Ticker: {ticker} | Price: ${current_price:.2f} | Strike: ${strike_price:.2f} | Exp: {selected_date}
+                    IV: {contract_iv*100:.2f}% | Delta: {d:.3f} | Gamma: {g:.3f} | Theta: {t:.3f}
                     """
 
-                    with st.spinner("🤖 Thinking..."):
+                    # 4. BUILD CONTEXT (COMPARISON OPTION)
+                    if comp_strike > 0:
+                        try:
+                            # Find the comparison contract in the existing data
+                            comp_contract = calls.iloc[(calls['strike'] - comp_strike).abs().argsort()[:1]]
+                            c_iv = comp_contract.iloc[0]['impliedVolatility']
+                            c_d, c_g, c_t = calculate_greeks(current_price, comp_strike, days_left/365, 0.045, c_iv)
+                            
+                            context_data += f"""
+                            
+                            COMPARISON OPTION (Strike ${comp_strike}):
+                            IV: {c_iv*100:.2f}% | Delta: {c_d:.3f} | Gamma: {c_g:.3f} | Theta: {c_t:.3f}
+                            """
+                        except:
+                            context_data += f"\n(Could not find data for Strike ${comp_strike})"
+
+                    with st.spinner("🤖 Thinking strategically..."):
                         try:
                             model = genai.GenerativeModel("models/gemini-2.0-flash-exp")
                             
-                            # PROMPT WITH CONTEXT
+                            # 5. STRATEGIC PROMPT
                             prompt = f"""
-                            You are a helpful, professional options trading assistant.
+                            You are a senior options strategist. 
+                            The user is asking a question based on the live market data below.
                             
-                            CONTEXT:
+                            DATA:
                             {context_data}
                             
                             USER QUESTION:
                             {user_question}
                             
-                            ANSWER:
-                            Provide a clear, educational, and direct answer based on the context above.
+                            INSTRUCTIONS:
+                            - Compare the Greeks (Delta/Theta) if a second strike is provided.
+                            - Explain the trade-off between "Probability" (Delta) and "Cost/Risk".
+                            - Give a direct recommendation.
                             """
                             
                             response = model.generate_content(prompt)
-                            st.markdown("### 💡 Answer")
+                            st.markdown("### 💡 Strategy Insight")
                             st.write(response.text)
                             
                         except Exception as e:
