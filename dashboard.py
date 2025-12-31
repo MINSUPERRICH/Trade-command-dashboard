@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 from scipy.stats import norm
 import matplotlib.pyplot as plt
+import plotly.graph_objects as go  # NEW: Interactive Graphing Library
 from datetime import datetime, timedelta
 import time
 import random
@@ -105,104 +106,111 @@ def calculate_greeks(S, K, T, r, sigma, option_type='call'):
     theta_daily = theta_annual / 365.0
     return delta, gamma, theta_daily
 
-def plot_greeks_curve(current_price, strike, days_left, iv, risk_free=0.045):
-    fig, ax1 = plt.subplots(figsize=(10, 5))
+# --- NEW INTERACTIVE CHARTS (PLOTLY) ---
+
+def plot_greeks_interactive(current_price, strike, days_left, iv, risk_free=0.045):
     prices = np.linspace(strike * 0.8, strike * 1.2, 100)
     T = max(days_left / 365.0, 0.001)
-    deltas = []
-    gammas = []
-    for p in prices:
-        d, g, t = calculate_greeks(p, strike, T, risk_free, iv)
-        deltas.append(d)
-        gammas.append(g)
+    deltas = [calculate_greeks(p, strike, T, risk_free, iv)[0] for p in prices]
+    gammas = [calculate_greeks(p, strike, T, risk_free, iv)[1] for p in prices]
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=prices, y=deltas, mode='lines', name='Delta (Speed)', line=dict(color='#4DA6FF', width=3)))
+    fig.add_trace(go.Scatter(x=prices, y=gammas, mode='lines', name='Gamma (Acceleration)', line=dict(color='#00FF7F', width=2, dash='dash'), yaxis="y2"))
     
-    ax1.plot(prices, deltas, color='#4DA6FF', linewidth=3, label='Delta (Speed)')
-    ax1.set_xlabel('Stock Price', color='white')
-    ax1.set_ylabel('Delta', color='#4DA6FF', fontsize=12, fontweight='bold')
-    ax1.tick_params(axis='y', labelcolor='#4DA6FF', colors='white')
-    ax1.tick_params(axis='x', colors='white')
-    ax1.set_ylim(0, 1)
-    
-    ax2 = ax1.twinx()
-    ax2.plot(prices, gammas, color='#00FF7F', linewidth=2, linestyle='--', label='Gamma (Acceleration)')
-    ax2.set_ylabel('Gamma', color='#00FF7F', fontsize=12, fontweight='bold')
-    ax2.tick_params(axis='y', labelcolor='#00FF7F', colors='white')
-    
-    curr_d, curr_g, curr_t = calculate_greeks(current_price, strike, T, risk_free, iv)
-    ax1.scatter([current_price], [curr_d], color='white', edgecolor='#4DA6FF', s=100, zorder=10, label='You Are Here')
-    
-    ax1.set_title(f"Speed (Delta) vs Acceleration (Gamma)", color='white')
-    ax1.grid(True, alpha=0.1)
-    fig.patch.set_facecolor('#0E1117'); ax1.set_facecolor('#0E1117')
+    # Current Position Marker
+    curr_d, curr_g, _ = calculate_greeks(current_price, strike, T, risk_free, iv)
+    fig.add_trace(go.Scatter(x=[current_price], y=[curr_d], mode='markers', name='You Are Here', marker=dict(color='white', size=12, line=dict(color='#4DA6FF', width=2))))
+
+    fig.update_layout(
+        title="Speed (Delta) vs Acceleration (Gamma)",
+        xaxis_title="Stock Price",
+        yaxis_title="Delta",
+        yaxis2=dict(title="Gamma", overlaying="y", side="right"),
+        template="plotly_dark",
+        hovermode="x unified",
+        height=500
+    )
     return fig
 
-def plot_simulation(S, K, days_left, iv, r=0.045, purchase_price=0):
-    fig, ax = plt.subplots(figsize=(10, 6))
-    prices = np.linspace(S * 0.8, S * 1.2, 50)
+def plot_simulation_interactive(S, K, days_left, iv, r=0.045, purchase_price=0):
+    prices = np.linspace(S * 0.8, S * 1.2, 100)
+    
     T1 = max(days_left / 365.0, 0.0001)
     pnl_today = [black_scholes_price(p, K, T1, r, iv) - purchase_price for p in prices]
+    
     T2 = max((days_left / 2) / 365.0, 0.0001)
     pnl_half = [black_scholes_price(p, K, T2, r, iv) - purchase_price for p in prices]
+    
     T3 = 0.0001
     pnl_exp = [black_scholes_price(p, K, T3, r, iv) - purchase_price for p in prices]
 
-    ax.plot(prices, pnl_today, color='#4DA6FF', linewidth=3, label='Today (T+0)')
-    ax.plot(prices, pnl_half, color='#FFD700', linewidth=2, linestyle='--', label=f'Halfway (T+{int(days_left/2)})')
-    ax.plot(prices, pnl_exp, color='#FF4B4B', linewidth=2, linestyle=':', label='Expiration (Max Risk)')
-    ax.axhline(0, color='white', linewidth=1, alpha=0.5)
-    ax.axvline(S, color='gray', linestyle='--', alpha=0.5, label='Current Price')
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=prices, y=pnl_today, mode='lines', name='Today (T+0)', line=dict(color='#4DA6FF', width=3)))
+    fig.add_trace(go.Scatter(x=prices, y=pnl_half, mode='lines', name=f'Halfway (T+{int(days_left/2)})', line=dict(color='#FFD700', width=2, dash='dash')))
+    fig.add_trace(go.Scatter(x=prices, y=pnl_exp, mode='lines', name='Expiration (Max Risk)', line=dict(color='#FF4B4B', width=2, dash='dot')))
+    
+    fig.add_hline(y=0, line_color="white", line_width=1, opacity=0.5)
+    fig.add_vline(x=S, line_color="gray", line_dash="dash", annotation_text="Current Price")
 
-    ax.set_title("🔮 Future Simulator: Profit/Loss over Time", color='white', fontsize=14)
-    ax.set_xlabel("Stock Price ($)", color='white')
-    ax.set_ylabel("Estimated P&L ($)", color='white')
-    ax.tick_params(colors='white')
-    ax.legend(facecolor='#262730', labelcolor='white')
-    ax.grid(True, alpha=0.1)
-    fig.patch.set_facecolor('#0E1117'); ax.set_facecolor('#0E1117')
+    fig.update_layout(
+        title="🔮 Interactive Future Simulator (Scroll to Zoom)",
+        xaxis_title="Stock Price ($)",
+        yaxis_title="Estimated P&L ($)",
+        template="plotly_dark",
+        hovermode="x unified",
+        dragmode='zoom', # Allows zooming
+        height=600
+    )
     return fig
 
-def plot_flow_battle(calls, puts, current_strike):
-    c_vol = calls[['strike', 'volume']].groupby('strike').sum().rename(columns={'volume': 'Call Volume'})
-    p_vol = puts[['strike', 'volume']].groupby('strike').sum().rename(columns={'volume': 'Put Volume'})
+def plot_flow_battle_interactive(calls, puts, current_strike):
+    c_vol = calls[['strike', 'volume']].groupby('strike').sum().rename(columns={'volume': 'Call Vol'})
+    p_vol = puts[['strike', 'volume']].groupby('strike').sum().rename(columns={'volume': 'Put Vol'})
     df = pd.merge(c_vol, p_vol, on='strike', how='outer').fillna(0)
+    
     strikes = sorted(df.index)
     try: idx = strikes.index(current_strike)
     except: idx = (np.abs(np.array(strikes) - current_strike)).argmin()
-    start_idx = max(0, idx - 3)
-    end_idx = min(len(strikes), idx + 4)
+    start_idx = max(0, idx - 4); end_idx = min(len(strikes), idx + 5)
     subset = df.iloc[start_idx:end_idx]
-    
-    fig, ax = plt.subplots(figsize=(10, 5))
-    x = np.arange(len(subset))
-    width = 0.35
-    ax.bar(x - width/2, subset['Call Volume'], width, label='Call Flow (Bulls)', color='#00FF7F')
-    ax.bar(x + width/2, subset['Put Volume'], width, label='Put Flow (Bears)', color='#FF4B4B')
-    ax.set_xticks(x); ax.set_xticklabels(subset.index, color='white')
-    ax.set_title("⚔️ Battle Map: Calls vs Puts Volume", color='white')
-    ax.legend(facecolor='#262730', labelcolor='white')
-    ax.tick_params(colors='white'); ax.grid(axis='y', alpha=0.1)
-    fig.patch.set_facecolor('#0E1117'); ax.set_facecolor('#0E1117')
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=subset.index, y=subset['Call Vol'], name='Bulls (Calls)', marker_color='#00FF7F'))
+    fig.add_trace(go.Bar(x=subset.index, y=subset['Put Vol'], name='Bears (Puts)', marker_color='#FF4B4B'))
+
+    fig.update_layout(
+        title="⚔️ Interactive Battle Map",
+        xaxis_title="Strike Price",
+        yaxis_title="Volume",
+        barmode='group',
+        template="plotly_dark",
+        hovermode="x unified",
+        height=500
+    )
     return fig
 
-def plot_whale_activity(calls_df, current_strike):
+def plot_whale_activity_interactive(calls_df, current_strike):
     strikes = sorted(calls_df['strike'].unique())
     try: idx = strikes.index(current_strike)
-    except: relevant_strikes = strikes[:5]
-    else:
-        start_idx = max(0, idx - 2)
-        end_idx = min(len(strikes), idx + 3)
-        relevant_strikes = strikes[start_idx:end_idx]
+    except: idx = 0
+    start_idx = max(0, idx - 3); end_idx = min(len(strikes), idx + 4)
+    relevant_strikes = strikes[start_idx:end_idx]
     subset = calls_df[calls_df['strike'].isin(relevant_strikes)].copy()
-    fig, ax = plt.subplots(figsize=(10, 5))
-    x = np.arange(len(subset['strike']))
-    width = 0.35
-    ax.bar(x - width/2, subset['openInterest'], width, label='Open Interest (Yesterday)', color='#4DA6FF', alpha=0.6)
-    ax.bar(x + width/2, subset['volume'], width, label='Volume (Today)', color='#00FF7F')
-    ax.set_xticks(x); ax.set_xticklabels(subset['strike'])
-    ax.set_title("Whale Detector: Yesterday (OI) vs Today (Vol)", color='white')
-    ax.legend(facecolor='#262730', labelcolor='white')
-    ax.tick_params(colors='white'); ax.grid(axis='y', alpha=0.1)
-    fig.patch.set_facecolor('#0E1117'); ax.set_facecolor('#0E1117')
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=subset['strike'], y=subset['openInterest'], name='Open Interest (Old)', marker_color='#4DA6FF', opacity=0.6))
+    fig.add_trace(go.Bar(x=subset['strike'], y=subset['volume'], name='Volume (New)', marker_color='#00FF7F'))
+
+    fig.update_layout(
+        title="Whale Detector (Hover to see Counts)",
+        xaxis_title="Strike Price",
+        yaxis_title="Contracts",
+        barmode='group',
+        template="plotly_dark",
+        hovermode="x unified",
+        height=500
+    )
     return fig
 
 def calculate_max_pain(options_chain):
@@ -275,16 +283,18 @@ if ticker:
 
         with tab5:
             st.header("Whale Detector")
-            fig_whale = plot_whale_activity(calls, strike_price)
-            st.pyplot(fig_whale)
+            fig_whale = plot_whale_activity_interactive(calls, strike_price)
+            st.plotly_chart(fig_whale, use_container_width=True)
 
         with tab6:
             st.header("Risk & Profit Hub")
             d, g, t = calculate_greeks(current_price, strike_price, days_left/365, 0.045, contract_iv)
             c1, c2, c3 = st.columns(3)
             c1.metric("Delta", f"{d:.2f}"); c2.metric("Gamma", f"{g:.3f}"); c3.metric("Theta", f"{t:.3f}")
-            fig_greeks = plot_greeks_curve(current_price, strike_price, days_left, contract_iv)
-            st.pyplot(fig_greeks)
+            
+            fig_greeks = plot_greeks_interactive(current_price, strike_price, days_left, contract_iv)
+            st.plotly_chart(fig_greeks, use_container_width=True)
+            
             st.markdown("---")
             st.subheader("🎯 Profit Target Calculator")
             col_calc1, col_calc2 = st.columns([1, 2])
@@ -308,7 +318,7 @@ if ticker:
                 for item in stock_conn.news[:3]: st.markdown(f"- [{item['title']}]({item['link']})")
             except: st.write("No news found.")
 
-        # --- TAB 9: AI CHART ANALYST (UPDATED PERSONA) ---
+        # --- TAB 9: AI CHART ANALYST ---
         with tab9:
             st.header("🤖 AI Chart Analyst")
             st.write("Upload screenshots for expert battle analysis.")
@@ -323,23 +333,14 @@ if ticker:
                     with st.spinner(f"🤖 Analyzing Battleground..."):
                         try:
                             model = genai.GenerativeModel(selected_model)
-                            # --- UPGRADED PROMPT ---
-                            prompt = """
-                            Act as a Senior Options Strategist. Analyze these charts.
-                            
-                            1. **The War Zone:** Look for "Walls" (Blue Bars/Open Interest) and "Attacks" (Green/Red Bars/Volume). Who is winning: Bulls or Bears?
-                            2. **The Setup:** Is there a "Short Squeeze" potential (High Volume breaking a Wall)? Or is it a "Trap"?
-                            3. **The Verdict:** Be decisive. Is this strike price a "Sniper Entry" (Good Value) or "Dead Money" (Bad Value)?
-                            
-                            Use terms like "Support", "Resistance", "Squeeze", and "Trap". Be direct.
-                            """
+                            prompt = "You are a Senior Options Strategist. Analyze these charts for 'Walls', 'Squeezes', and 'Traps'. Be decisive."
                             content = [prompt] + [Image.open(f) for f in uploaded_files]
                             response = model.generate_content(content)
                             st.markdown("### 📝 Strategic Report"); st.write(response.text)
                         except Exception as e: st.error(f"Error: {e}")
                 else: st.error("❌ API Key not found!")
 
-        # --- TAB 10: STRATEGY ENGINE (UPDATED PERSONA) ---
+        # --- TAB 10: STRATEGY ENGINE ---
         with tab10:
             st.header("💬 AI Strategy Engine")
             col_comp1, col_comp2 = st.columns([1,3])
@@ -351,47 +352,28 @@ if ticker:
                     secure_key = st.secrets["api_keys"]["gemini"]
                     genai.configure(api_key=secure_key)
                     
-                    context_data = f"""
-                    MAIN OPTION:
-                    Ticker: {ticker} | Price: ${current_price:.2f} | Strike: ${strike_price:.2f} | Exp: {selected_date}
-                    IV: {contract_iv*100:.2f}% | Delta: {d:.3f} | Gamma: {g:.3f} | Theta: {t:.3f}
-                    """
+                    context_data = f"MAIN: Ticker {ticker} | Price ${current_price:.2f} | Strike ${strike_price:.2f} | IV {contract_iv*100:.2f}% | Delta {d:.3f} | Theta {t:.3f}"
                     if comp_strike > 0:
                         try:
-                            comp_contract = calls.iloc[(calls['strike'] - comp_strike).abs().argsort()[:1]]
-                            c_iv = comp_contract.iloc[0]['impliedVolatility']
-                            c_d, c_g, c_t = calculate_greeks(current_price, comp_strike, days_left/365, 0.045, c_iv)
-                            context_data += f"\nCOMPARISON (Strike ${comp_strike}): IV {c_iv*100:.2f}% | Delta {c_d:.3f} | Theta {c_t:.3f}"
+                            c_iv = calls.iloc[(calls['strike'] - comp_strike).abs().argsort()[:1]].iloc[0]['impliedVolatility']
+                            c_d, _, c_t = calculate_greeks(current_price, comp_strike, days_left/365, 0.045, c_iv)
+                            context_data += f"\nCOMPARE: Strike ${comp_strike} | Delta {c_d:.3f} | Theta {c_t:.3f}"
                         except: pass
 
                     with st.spinner("🤖 Consulting Senior Trader..."):
                         try:
                             model = genai.GenerativeModel("models/gemini-2.0-flash-exp")
-                            # --- UPGRADED PROMPT ---
-                            prompt = f"""
-                            You are a cynical, expert Options Trader.
-                            
-                            DATA:
-                            {context_data}
-                            
-                            USER QUESTION:
-                            {user_question}
-                            
-                            INSTRUCTIONS:
-                            1. **Analyze the Value:** If Delta is < 0.20, call it a "Lotto Ticket". If IV > 30%, call it "Expensive".
-                            2. **Compare Risks:** If comparing strikes, explicitly say which one is the "Investment" and which is the "Gamble".
-                            3. **Direct Answer:** Answer the user's question with a "Trader's Verdict". Don't be vague.
-                            """
+                            prompt = f"You are a cynical, expert Options Trader. Analyze: {context_data}\nUser: {user_question}\nVerdict:"
                             st.write(model.generate_content(prompt).text)
                         except Exception as e: st.error(f"Error: {e}")
                 else: st.error("❌ API Key not found!")
 
         with tab11:
             st.header("🔮 Future P&L Simulator")
-            st.write("Visualize how time decay (Theta) eats your profit if the stock stays flat.")
-            fig_sim = plot_simulation(current_price, strike_price, days_left, contract_iv, purchase_price=theo_price)
-            st.pyplot(fig_sim)
-            st.info(f"**How to read:**\n- 🔵 Blue: Today\n- 🟡 Yellow: Halfway to Exp\n- 🔴 Red: At Expiration")
+            st.write("Scroll UP on the chart to zoom in. Check for gaps between lines!")
+            fig_sim = plot_simulation_interactive(current_price, strike_price, days_left, contract_iv, purchase_price=theo_price)
+            st.plotly_chart(fig_sim, use_container_width=True)
+            st.info("💡 **Hover** over any line to see the exact value. **Scroll** to zoom in.")
 
         with tab12:
             st.header("🌊 Market Flow: Bulls vs Bears")
@@ -400,15 +382,11 @@ if ticker:
             
             c1, c2, c3 = st.columns(3)
             c1.metric("Call Vol", f"{int(total_call_vol):,}"); c2.metric("Put Vol", f"{int(total_put_vol):,}")
-            if pcr > 1.0: sentiment = "🐻 Bearish"
-            elif pcr < 0.7: sentiment = "🐂 Bullish"
-            else: sentiment = "⚖️ Neutral"
-            c3.metric("PCR", f"{pcr:.2f}", sentiment)
+            c3.metric("PCR", f"{pcr:.2f}", "🐻 Bearish" if pcr > 1 else "🐂 Bullish")
             st.markdown("---")
-            st.subheader("⚔️ The Battle Map")
-            fig_flow = plot_flow_battle(calls, puts, strike_price)
-            st.pyplot(fig_flow)
-            st.info("Green = Bulls. Red = Bears. Watch for tall Red Bars near your strike!")
+            st.subheader("⚔️ Interactive Battle Map")
+            fig_flow = plot_flow_battle_interactive(calls, puts, strike_price)
+            st.plotly_chart(fig_flow, use_container_width=True)
 
     except Exception as e:
         if "Too Many Requests" in str(e):
