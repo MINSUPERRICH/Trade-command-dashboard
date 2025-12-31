@@ -33,6 +33,16 @@ def check_password():
 if not check_password():
     st.stop()
 
+# --- CSS STYLING ---
+st.markdown("""
+<style>
+    .metric-card { background-color: #0e1117; border: 1px solid #262730; padding: 20px; border-radius: 10px; color: white; }
+    .profit-box { background-color: #1E3D59; padding: 20px; border-radius: 10px; border-left: 5px solid #00FF7F; margin-bottom: 20px;}
+    .theta-box { background-color: #330000; padding: 20px; border-radius: 10px; border-left: 5px solid #FF4B4B; }
+    .stButton>button { width: 100%; }
+</style>
+""", unsafe_allow_html=True)
+
 # --- HELPER FUNCTIONS ---
 def fetch_with_retry(func, *args, retries=3):
     for i in range(retries):
@@ -46,155 +56,267 @@ def fetch_with_retry(func, *args, retries=3):
     return func(*args)
 
 @st.cache_data(ttl=900) 
-def get_stock_data(ticker):
+def get_stock_history_and_info(ticker_symbol):
     def _get():
-        stock = yf.Ticker(ticker)
-        return stock.history(period="5d"), stock.info
+        stock = yf.Ticker(ticker_symbol)
+        history = stock.history(period="5d")
+        info = stock.info
+        return history, info
     return fetch_with_retry(_get)
 
 @st.cache_data(ttl=900)
-def get_option_chain(ticker, date):
+def get_option_chain_data(ticker_symbol, date):
     def _get():
-        stock = yf.Ticker(ticker)
-        opt = stock.option_chain(date)
-        calls = opt.calls; calls['type'] = 'call'
-        puts = opt.puts; puts['type'] = 'put'
-        return pd.concat([calls, puts]), calls, puts
+        stock = yf.Ticker(ticker_symbol)
+        opt_chain = stock.option_chain(date)
+        calls = opt_chain.calls
+        calls['type'] = 'call'
+        puts = opt_chain.puts
+        puts['type'] = 'put'
+        full = pd.concat([calls, puts])
+        return full, calls, puts
     return fetch_with_retry(_get)
+
+def get_ticker_object(ticker_symbol):
+    return yf.Ticker(ticker_symbol)
 
 def calculate_greeks(S, K, T, r, sigma, option_type='call'):
     if T <= 0 or sigma <= 0: return 0, 0, 0
     d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
     d2 = d1 - sigma * np.sqrt(T)
-    if option_type == 'call': delta = norm.cdf(d1)
-    else: delta = norm.cdf(d1) - 1
+    if option_type == 'call':
+        delta = norm.cdf(d1)
+    else:
+        delta = norm.cdf(d1) - 1
     gamma = norm.pdf(d1) / (S * sigma * np.sqrt(T))
     term1 = -(S * sigma * norm.pdf(d1)) / (2 * np.sqrt(T))
     term2 = r * K * np.exp(-r * T) * norm.cdf(d2)
-    theta = (term1 - term2) / 365.0
-    return delta, gamma, theta
+    theta_annual = term1 - term2
+    theta_daily = theta_annual / 365.0
+    return delta, gamma, theta_daily
 
-def plot_greeks(S, K, T, iv):
+def plot_greeks_curve(current_price, strike, days_left, iv, risk_free=0.045):
     fig, ax1 = plt.subplots(figsize=(10, 5))
-    prices = np.linspace(K * 0.8, K * 1.2, 100)
-    deltas = []; gammas = []
+    prices = np.linspace(strike * 0.8, strike * 1.2, 100)
+    T = max(days_left / 365.0, 0.001)
+    deltas = []
+    gammas = []
     for p in prices:
-        d, g, t = calculate_greeks(p, K, max(T, 0.001), 0.045, iv)
-        deltas.append(d); gammas.append(g)
-    ax1.plot(prices, deltas, color='#4DA6FF', linewidth=3, label='Delta')
+        d, g, t = calculate_greeks(p, strike, T, risk_free, iv)
+        deltas.append(d)
+        gammas.append(g)
+    
+    ax1.plot(prices, deltas, color='#4DA6FF', linewidth=3, label='Delta (Speed)')
+    ax1.set_xlabel('Stock Price', color='white')
+    ax1.set_ylabel('Delta', color='#4DA6FF', fontsize=12, fontweight='bold')
+    ax1.tick_params(axis='y', labelcolor='#4DA6FF', colors='white')
+    ax1.tick_params(axis='x', colors='white')
+    ax1.set_ylim(0, 1)
+    
     ax2 = ax1.twinx()
-    ax2.plot(prices, gammas, color='#00FF7F', linewidth=2, linestyle='--', label='Gamma')
-    curr_d, _, _ = calculate_greeks(S, K, max(T, 0.001), 0.045, iv)
-    ax1.scatter([S], [curr_d], color='white', s=100, zorder=10)
-    ax1.set_facecolor('#0E1117'); fig.patch.set_facecolor('#0E1117')
-    ax1.tick_params(colors='white'); ax2.tick_params(colors='white')
+    ax2.plot(prices, gammas, color='#00FF7F', linewidth=2, linestyle='--', label='Gamma (Acceleration)')
+    ax2.set_ylabel('Gamma', color='#00FF7F', fontsize=12, fontweight='bold')
+    ax2.tick_params(axis='y', labelcolor='#00FF7F', colors='white')
+    
+    curr_d, curr_g, curr_t = calculate_greeks(current_price, strike, T, risk_free, iv)
+    ax1.scatter([current_price], [curr_d], color='white', edgecolor='#4DA6FF', s=100, zorder=10, label='You Are Here')
+    
+    ax1.set_title(f"Speed (Delta) vs Acceleration (Gamma)", color='white')
+    ax1.grid(True, alpha=0.1)
+    fig.patch.set_facecolor('#0E1117'); ax1.set_facecolor('#0E1117')
     return fig
 
-def plot_whale(calls, strike):
+def plot_whale_activity(calls_df, current_strike):
+    strikes = sorted(calls_df['strike'].unique())
     try:
-        strikes = sorted(calls['strike'].unique())
-        idx = strikes.index(strike)
-        subset = calls[calls['strike'].isin(strikes[max(0, idx-2):min(len(strikes), idx+3)])]
-    except: subset = calls.head(5)
-    
+        idx = strikes.index(current_strike)
+        start_idx = max(0, idx - 2)
+        end_idx = min(len(strikes), idx + 3)
+        relevant_strikes = strikes[start_idx:end_idx]
+    except:
+        relevant_strikes = strikes[:5]
+    subset = calls_df[calls_df['strike'].isin(relevant_strikes)].copy()
     fig, ax = plt.subplots(figsize=(10, 5))
-    x = np.arange(len(subset)); width = 0.35
-    ax.bar(x - width/2, subset['openInterest'], width, label='Open Interest', color='#4DA6FF', alpha=0.6)
-    ax.bar(x + width/2, subset['volume'], width, label='Volume', color='#00FF7F')
-    ax.set_xticks(x); ax.set_xticklabels(subset['strike'], color='white')
+    x = np.arange(len(subset['strike']))
+    width = 0.35
+    ax.bar(x - width/2, subset['openInterest'], width, label='Open Interest (Yesterday)', color='#4DA6FF', alpha=0.6)
+    ax.bar(x + width/2, subset['volume'], width, label='Volume (Today)', color='#00FF7F')
+    ax.set_xticks(x); ax.set_xticklabels(subset['strike'])
+    ax.set_title("Whale Detector: Yesterday (OI) vs Today (Vol)", color='white')
     ax.legend(facecolor='#262730', labelcolor='white')
-    ax.set_facecolor('#0E1117'); fig.patch.set_facecolor('#0E1117')
-    ax.tick_params(colors='white')
+    ax.tick_params(colors='white'); ax.grid(axis='y', alpha=0.1)
+    fig.patch.set_facecolor('#0E1117'); ax.set_facecolor('#0E1117')
     return fig
+
+def calculate_max_pain(options_chain):
+    strikes = options_chain['strike'].unique()
+    max_pain_data = []
+    for strike in strikes:
+        calls_at_strike = options_chain[options_chain['type'] == 'call']
+        puts_at_strike = options_chain[options_chain['type'] == 'put']
+        call_loss = calls_at_strike.apply(lambda x: max(0, strike - x['strike']) * x['openInterest'], axis=1).sum()
+        put_loss = puts_at_strike.apply(lambda x: max(0, x['strike'] - strike) * x['openInterest'], axis=1).sum()
+        max_pain_data.append({'strike': strike, 'total_loss': call_loss + put_loss})
+    df_pain = pd.DataFrame(max_pain_data)
+    if df_pain.empty: return 0
+    return df_pain.loc[df_pain['total_loss'].idxmin()]['strike']
 
 # --- MAIN APP ---
-st.sidebar.header("⚙️ Settings")
-ticker = st.sidebar.text_input("Ticker", value="PEP").upper()
-strike = st.sidebar.number_input("Strike ($)", value=148.0)
+st.sidebar.markdown("## ⚙️ Settings")
+ticker = st.sidebar.text_input("Ticker Symbol", value="PEP").upper()
+strike_price = st.sidebar.number_input("Strike Price ($)", value=148.0)
+
+if st.sidebar.button("🔄 Force Refresh Data"):
+    st.cache_data.clear()
+    st.rerun()
 
 if ticker:
     try:
-        stock = yf.Ticker(ticker)
-        history, info = get_stock_data(ticker)
-        curr_price = info.get('currentPrice', history['Close'].iloc[-1])
-        
-        exps = stock.options
-        if not exps: st.stop()
-        sel_date = st.sidebar.selectbox("Expiration", exps)
-        
-        full, calls, puts = get_option_chain(ticker, sel_date)
-        contract = calls.iloc[(calls['strike'] - strike).abs().argsort()[:1]]
-        iv = contract.iloc[0]['impliedVolatility']
-        
-        st.title(f"📊 {ticker} Command Center")
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Price", f"${curr_price:.2f}")
-        c2.metric("Strike", f"${strike:.2f}")
-        c3.metric("Date", sel_date)
-        
-        tabs = st.tabs(["1. Whale Detector", "2. Risk/Profit", "3. 🤖 AI Analyst"])
-        
-        with tabs[0]:
-            st.pyplot(plot_whale(calls, strike))
+        stock_conn = get_ticker_object(ticker)
+        with st.spinner('Fetching market data...'):
+            history, info = get_stock_history_and_info(ticker)
+            current_price = info.get('currentPrice', history['Close'].iloc[-1])
+            prev_close = info.get('previousClose', history['Close'].iloc[-2])
             
-        with tabs[1]:
-            days = (datetime.strptime(sel_date, "%Y-%m-%d") - datetime.now()).days
-            d, g, t = calculate_greeks(curr_price, strike, days/365, 0.045, iv)
-            k1, k2, k3 = st.columns(3)
-            k1.metric("Delta", f"{d:.2f}"); k2.metric("Gamma", f"{g:.3f}"); k3.metric("Theta", f"{t:.3f}")
-            st.pyplot(plot_greeks(curr_price, strike, days/365, iv))
+            expirations = stock_conn.options
+            if not expirations:
+                st.error("No options data found.")
+                st.stop()
+            selected_date = st.sidebar.selectbox("Expiration Date", expirations)
             
-            st.write("---")
-            target = st.number_input("Desired Profit ($)", 50)
-            if d > 0.01:
-                move = (target/100)/d
-                st.info(f"To make **${target}**, {ticker} needs to hit **${curr_price + move:.2f}**")
+            full_chain, calls, puts = get_option_chain_data(ticker, selected_date)
+            specific_contract = calls.iloc[(calls['strike'] - strike_price).abs().argsort()[:1]]
+            contract_iv = specific_contract.iloc[0]['impliedVolatility']
+        
+        st.title(f"📊 {ticker} Command Center 🔒")
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Current Price", f"${current_price:.2f}", f"{current_price - prev_close:.2f}")
+        col2.metric("Your Strike", f"${strike_price:.2f}")
+        col3.metric("Selected Expiration", selected_date)
+        st.markdown("---")
 
-        with tabs[2]:
-            st.header("🤖 AI Chart Analyst")
-            files = st.file_uploader("Upload Charts", accept_multiple_files=True)
-            
-            if st.button("Analyze"):
-                if "api_keys" in st.secrets:
-                    key = st.secrets["api_keys"]["gemini"]
-                    genai.configure(api_key=key)
-                    
-                    # 1. TRY TO FIND THE RIGHT MODEL
-                    try:
-                        # Priority 1: Flash 1.5
-                        model = genai.GenerativeModel('gemini-1.5-flash')
-                    except:
-                        try:
-                            # Priority 2: Pro Vision (Old reliable)
-                            model = genai.GenerativeModel('gemini-pro-vision')
-                        except:
-                            st.error("❌ Could not find a working model. Please update requirements.txt!")
-                            st.stop()
-                            
-                    # 2. ANALYZE
-                    if files:
-                        imgs = [Image.open(f) for f in files]
-                        st.image(imgs, width=200)
-                        with st.spinner(f"Analyzing with {model.model_name}..."):
-                            try:
-                                resp = model.generate_content(["Analyze these trading charts. Verdict: Bullish or Bearish?", *imgs])
-                                st.write(resp.text)
-                            except Exception as e:
-                                st.error(f"AI Error: {e}")
+        # --- TABS ---
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
+            "1. Price", "2. Volume", "3. IV", "4. Rule of 16", 
+            "5. Whale Detector", "6. Risk & Profit", "7. Max Pain", "8. News", "9. 🤖 AI Analyst"
+        ])
+
+        with tab1:
+            st.line_chart(history['Close'])
+            gap = current_price - prev_close
+            if abs(gap) < 0.50: st.success("✅ Stable Open")
+            else: st.warning("⚠️ Volatile Open")
+
+        with tab2: st.metric("Volume", f"{info.get('volume', 0):,}")
+        with tab3: st.metric("Implied Volatility", f"{contract_iv * 100:.2f}%")
+        with tab4: st.metric("Expected Daily Move", f"${(contract_iv * 100 / 16) / 100 * current_price:.2f}")
+
+        with tab5:
+            st.header("Whale Detector")
+            fig_whale = plot_whale_activity(calls, strike_price)
+            st.pyplot(fig_whale)
+
+        with tab6:
+            st.header("Risk & Profit Hub")
+            expiry_dt = datetime.strptime(selected_date, "%Y-%m-%d")
+            days_left = (expiry_dt - datetime.now()).days
+            if days_left < 0: days_left = 0
+            d, g, t = calculate_greeks(current_price, strike_price, days/365, 0.045, contract_iv)
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Delta", f"{d:.2f}")
+            c2.metric("Gamma", f"{g:.3f}")
+            c3.metric("Theta", f"{t:.3f}")
+            fig_greeks = plot_greeks_curve(current_price, strike_price, days_left, contract_iv)
+            st.pyplot(fig_greeks)
+            st.markdown("---")
+            st.subheader("🎯 Profit Target Calculator")
+            col_calc1, col_calc2 = st.columns([1, 2])
+            with col_calc1:
+                desired_profit = st.number_input("Desired Profit ($)", value=50, step=10)
+            with col_calc2:
+                if d > 0.001:
+                    price_change_needed = desired_profit / 100
+                    stock_move_needed = price_change_needed / d
+                    target_stock_price = current_price + stock_move_needed
+                    st.markdown(f"<div class='profit-box'>Target Stock Price: <b>${target_stock_price:.2f}</b><br>(Move: +${stock_move_needed:.2f})</div>", unsafe_allow_html=True)
                 else:
-                    st.error("Missing API Key in Secrets!")
+                    st.warning("⚠️ Delta is 0. Cannot calculate target.")
+            st.markdown("---")
+            st.subheader("🗓️ Holiday Decay Calculator")
+            holidays = st.number_input("Days market is closed", value=1, step=1)
+            est_loss = abs(t) * holidays * 100
+            st.markdown(f"<div class='theta-box'>Estimated Loss: <b>${est_loss:.2f} per contract</b></div>", unsafe_allow_html=True)
+
+        with tab7: st.metric("Max Pain", f"${calculate_max_pain(full_chain):.2f}")
+        with tab8:
+            try: 
+                for item in stock_conn.news[:3]: st.markdown(f"- [{item['title']}]({item['link']})")
+            except: st.write("No news found.")
+
+        # --- TAB 9: AI ANALYST (ULTIMATE EDITION) ---
+        with tab9:
+            st.header("🤖 AI Chart Analyst")
+            st.write("Upload screenshots of your charts (Whale Detector, Price, etc).")
             
-            # DEBUG TOOL
-            with st.expander("🛠️ Debug: Check My Models"):
-                if st.button("List Available Models"):
-                    if "api_keys" in st.secrets:
-                        genai.configure(api_key=st.secrets["api_keys"]["gemini"])
-                        try:
-                            for m in genai.list_models():
-                                if 'generateContent' in m.supported_generation_methods:
-                                    st.write(f"- {m.name}")
-                        except Exception as e:
-                            st.error(f"Error listing models: {e}")
+            # --- MODEL SELECTOR ---
+            # I added the models from your list that are most likely to work with Images
+            available_models = [
+                "models/gemini-2.0-flash-exp",   # Best for speed/images
+                "models/gemini-2.0-flash",       # Stable 2.0
+                "models/gemini-1.5-pro",         # High intelligence
+                "models/gemini-1.5-flash",       # Fast standard
+                "models/gemini-2.5-flash",       # Bleeding edge (if available)
+            ]
+            selected_model = st.selectbox("🧠 Select Your AI Brain:", available_models, index=0)
+
+            uploaded_files = st.file_uploader("Upload Screenshots", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
+            
+            if uploaded_files:
+                images = []
+                cols = st.columns(len(uploaded_files))
+                for i, file in enumerate(uploaded_files):
+                    img = Image.open(file)
+                    images.append(img)
+                    with cols[i]:
+                        st.image(img, caption=f"Chart {i+1}", use_container_width=True)
+                
+                if st.button("Analyze Images"):
+                    if "api_keys" in st.secrets and "gemini" in st.secrets["api_keys"]:
+                        secure_key = st.secrets["api_keys"]["gemini"]
+                        genai.configure(api_key=secure_key)
+
+                        with st.spinner(f"🤖 {selected_model} is analyzing..."):
+                            try:
+                                # Use the model selected by the user
+                                model = genai.GenerativeModel(selected_model)
+                                
+                                # CONVERSATIONAL PROMPT
+                                prompt = """
+                                You are a professional, savvy, and slightly witty Options Trading Analyst. 
+                                Your job is to look at these trading charts and give me a "Real Talk" assessment.
+
+                                1. **The Scene:** What is the main story here? (e.g., "The Whales are building a wall at $150").
+                                2. **The Risk:** Is there a cliff? Is the volume fake? Be honest.
+                                3. **The Verdict:** If this was your money, are you Bullish, Bearish, or Staying Away?
+                                
+                                Keep it conversational, actionable, and short. Don't be boring.
+                                """
+                                content = [prompt] + images
+                                response = model.generate_content(content)
+                                st.markdown("### 📝 The Analyst's Report")
+                                st.write(response.text)
+                                st.success("Analysis Complete!")
+                                
+                            except Exception as e:
+                                st.error(f"Error with {selected_model}: {e}")
+                                st.info("💡 Try selecting a different model from the dropdown above!")
+                    else:
+                        st.error("❌ API Key not found! Check Streamlit Secrets.")
 
     except Exception as e:
-        st.error(f"Loading... ({e})")
+        if "Too Many Requests" in str(e):
+             st.error("🚦 Traffic Jam. Retrying... wait.")
+             time.sleep(2)
+             st.rerun()
+        else:
+            st.error(f"Waiting for inputs... ({e})")
