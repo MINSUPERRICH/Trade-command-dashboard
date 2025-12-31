@@ -80,7 +80,6 @@ def get_option_chain_data(ticker_symbol, date):
 def get_ticker_object(ticker_symbol):
     return yf.Ticker(ticker_symbol)
 
-# THEORETICAL PRICE
 def black_scholes_price(S, K, T, r, sigma, option_type='call'):
     if T <= 0: return max(0, S - K) if option_type == 'call' else max(0, K - S)
     d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
@@ -162,21 +161,13 @@ def plot_simulation(S, K, days_left, iv, r=0.045, purchase_price=0):
     fig.patch.set_facecolor('#0E1117'); ax.set_facecolor('#0E1117')
     return fig
 
-# NEW: Plot Call vs Put Volume Battle
 def plot_flow_battle(calls, puts, current_strike):
-    # Merge Data
     c_vol = calls[['strike', 'volume']].groupby('strike').sum().rename(columns={'volume': 'Call Volume'})
     p_vol = puts[['strike', 'volume']].groupby('strike').sum().rename(columns={'volume': 'Put Volume'})
     df = pd.merge(c_vol, p_vol, on='strike', how='outer').fillna(0)
-    
-    # Filter for relevant range
     strikes = sorted(df.index)
-    try:
-        idx = strikes.index(current_strike)
-    except:
-        # If exact strike not found, find closest
-        idx = (np.abs(np.array(strikes) - current_strike)).argmin()
-        
+    try: idx = strikes.index(current_strike)
+    except: idx = (np.abs(np.array(strikes) - current_strike)).argmin()
     start_idx = max(0, idx - 3)
     end_idx = min(len(strikes), idx + 4)
     subset = df.iloc[start_idx:end_idx]
@@ -184,29 +175,23 @@ def plot_flow_battle(calls, puts, current_strike):
     fig, ax = plt.subplots(figsize=(10, 5))
     x = np.arange(len(subset))
     width = 0.35
-    
-    # Plot Side-by-Side Bars
     ax.bar(x - width/2, subset['Call Volume'], width, label='Call Flow (Bulls)', color='#00FF7F')
     ax.bar(x + width/2, subset['Put Volume'], width, label='Put Flow (Bears)', color='#FF4B4B')
-    
-    ax.set_xticks(x)
-    ax.set_xticklabels(subset.index, color='white')
+    ax.set_xticks(x); ax.set_xticklabels(subset.index, color='white')
     ax.set_title("⚔️ Battle Map: Calls vs Puts Volume", color='white')
     ax.legend(facecolor='#262730', labelcolor='white')
-    ax.tick_params(colors='white')
-    ax.grid(axis='y', alpha=0.1)
+    ax.tick_params(colors='white'); ax.grid(axis='y', alpha=0.1)
     fig.patch.set_facecolor('#0E1117'); ax.set_facecolor('#0E1117')
     return fig
 
 def plot_whale_activity(calls_df, current_strike):
     strikes = sorted(calls_df['strike'].unique())
-    try:
-        idx = strikes.index(current_strike)
+    try: idx = strikes.index(current_strike)
+    except: relevant_strikes = strikes[:5]
+    else:
         start_idx = max(0, idx - 2)
         end_idx = min(len(strikes), idx + 3)
         relevant_strikes = strikes[start_idx:end_idx]
-    except:
-        relevant_strikes = strikes[:5]
     subset = calls_df[calls_df['strike'].isin(relevant_strikes)].copy()
     fig, ax = plt.subplots(figsize=(10, 5))
     x = np.arange(len(subset['strike']))
@@ -296,42 +281,26 @@ if ticker:
         with tab6:
             st.header("Risk & Profit Hub")
             d, g, t = calculate_greeks(current_price, strike_price, days_left/365, 0.045, contract_iv)
-            
             c1, c2, c3 = st.columns(3)
-            c1.metric("Delta", f"{d:.2f}")
-            c2.metric("Gamma", f"{g:.3f}")
-            c3.metric("Theta", f"{t:.3f}")
-            
+            c1.metric("Delta", f"{d:.2f}"); c2.metric("Gamma", f"{g:.3f}"); c3.metric("Theta", f"{t:.3f}")
             fig_greeks = plot_greeks_curve(current_price, strike_price, days_left, contract_iv)
             st.pyplot(fig_greeks)
-            
             st.markdown("---")
             st.subheader("🎯 Profit Target Calculator")
             col_calc1, col_calc2 = st.columns([1, 2])
-            with col_calc1:
-                desired_profit = st.number_input("Desired Profit ($)", value=50, step=10)
+            with col_calc1: desired_profit = st.number_input("Desired Profit ($)", value=50, step=10)
             with col_calc2:
                 if d > 0.001:
                     price_change_needed = desired_profit / 100
                     stock_move_needed = price_change_needed / d
                     target_stock_price = current_price + stock_move_needed
-                    st.markdown(f"""
-                    <div class='profit-box' style='color: white;'>
-                        Target Stock Price: <b>${target_stock_price:.2f}</b><br>
-                        (Move: +${stock_move_needed:.2f})
-                    </div>
-                    """, unsafe_allow_html=True)
-                else:
-                    st.warning("⚠️ Delta is 0. Cannot calculate target.")
+                    st.markdown(f"<div class='profit-box' style='color: white;'>Target Stock Price: <b>${target_stock_price:.2f}</b><br>(Move: +${stock_move_needed:.2f})</div>", unsafe_allow_html=True)
+                else: st.warning("⚠️ Delta is 0. Cannot calculate target.")
             st.markdown("---")
             st.subheader("🗓️ Holiday Decay Calculator")
             holidays = st.number_input("Days market is closed", value=1, step=1)
             est_loss = abs(t) * holidays * 100
-            st.markdown(f"""
-            <div class='theta-box' style='color: white;'>
-                Estimated Loss: <b>${est_loss:.2f} per contract</b>
-            </div>
-            """, unsafe_allow_html=True)
+            st.markdown(f"<div class='theta-box' style='color: white;'>Estimated Loss: <b>${est_loss:.2f} per contract</b></div>", unsafe_allow_html=True)
 
         with tab7: st.metric("Max Pain", f"${calculate_max_pain(full_chain):.2f}")
         with tab8:
@@ -339,9 +308,10 @@ if ticker:
                 for item in stock_conn.news[:3]: st.markdown(f"- [{item['title']}]({item['link']})")
             except: st.write("No news found.")
 
+        # --- TAB 9: AI CHART ANALYST (UPDATED PERSONA) ---
         with tab9:
             st.header("🤖 AI Chart Analyst")
-            st.write("Upload screenshots for visual analysis.")
+            st.write("Upload screenshots for expert battle analysis.")
             available_models = ["models/gemini-2.0-flash-exp", "models/gemini-2.0-flash"]
             selected_model = st.selectbox("🧠 Select Model:", available_models, index=0)
 
@@ -350,21 +320,31 @@ if ticker:
                 if "api_keys" in st.secrets and "gemini" in st.secrets["api_keys"]:
                     secure_key = st.secrets["api_keys"]["gemini"]
                     genai.configure(api_key=secure_key)
-                    with st.spinner(f"🤖 Analyzing..."):
+                    with st.spinner(f"🤖 Analyzing Battleground..."):
                         try:
                             model = genai.GenerativeModel(selected_model)
-                            prompt = "You are an expert financial analyst. Analyze these charts. Identify key patterns and risk."
+                            # --- UPGRADED PROMPT ---
+                            prompt = """
+                            Act as a Senior Options Strategist. Analyze these charts.
+                            
+                            1. **The War Zone:** Look for "Walls" (Blue Bars/Open Interest) and "Attacks" (Green/Red Bars/Volume). Who is winning: Bulls or Bears?
+                            2. **The Setup:** Is there a "Short Squeeze" potential (High Volume breaking a Wall)? Or is it a "Trap"?
+                            3. **The Verdict:** Be decisive. Is this strike price a "Sniper Entry" (Good Value) or "Dead Money" (Bad Value)?
+                            
+                            Use terms like "Support", "Resistance", "Squeeze", and "Trap". Be direct.
+                            """
                             content = [prompt] + [Image.open(f) for f in uploaded_files]
                             response = model.generate_content(content)
-                            st.markdown("### 📝 Analysis Report"); st.write(response.text)
+                            st.markdown("### 📝 Strategic Report"); st.write(response.text)
                         except Exception as e: st.error(f"Error: {e}")
                 else: st.error("❌ API Key not found!")
 
+        # --- TAB 10: STRATEGY ENGINE (UPDATED PERSONA) ---
         with tab10:
             st.header("💬 AI Strategy Engine")
             col_comp1, col_comp2 = st.columns([1,3])
             with col_comp1: comp_strike = st.number_input("Compare with Strike ($)", value=0.0, step=1.0)
-            with col_comp2: user_question = st.text_input("Your Question:", placeholder="e.g. Which strike is safer?")
+            with col_comp2: user_question = st.text_input("Your Question:", placeholder="e.g. Is this a trap?")
 
             if user_question:
                 if "api_keys" in st.secrets and "gemini" in st.secrets["api_keys"]:
@@ -372,21 +352,36 @@ if ticker:
                     genai.configure(api_key=secure_key)
                     
                     context_data = f"""
-                    MAIN: Ticker {ticker} | Price ${current_price:.2f} | Strike ${strike_price:.2f} | Exp {selected_date}
-                    IV {contract_iv*100:.2f}% | Delta {d:.3f} | Gamma {g:.3f} | Theta {t:.3f}
+                    MAIN OPTION:
+                    Ticker: {ticker} | Price: ${current_price:.2f} | Strike: ${strike_price:.2f} | Exp: {selected_date}
+                    IV: {contract_iv*100:.2f}% | Delta: {d:.3f} | Gamma: {g:.3f} | Theta: {t:.3f}
                     """
                     if comp_strike > 0:
                         try:
                             comp_contract = calls.iloc[(calls['strike'] - comp_strike).abs().argsort()[:1]]
                             c_iv = comp_contract.iloc[0]['impliedVolatility']
                             c_d, c_g, c_t = calculate_greeks(current_price, comp_strike, days_left/365, 0.045, c_iv)
-                            context_data += f"\nCOMPARE: Strike ${comp_strike} | Delta {c_d:.3f} | Theta {c_t:.3f}"
+                            context_data += f"\nCOMPARISON (Strike ${comp_strike}): IV {c_iv*100:.2f}% | Delta {c_d:.3f} | Theta {c_t:.3f}"
                         except: pass
 
-                    with st.spinner("🤖 Thinking..."):
+                    with st.spinner("🤖 Consulting Senior Trader..."):
                         try:
                             model = genai.GenerativeModel("models/gemini-2.0-flash-exp")
-                            prompt = f"You are a strategist. Analyze: {context_data}\nQuestion: {user_question}"
+                            # --- UPGRADED PROMPT ---
+                            prompt = f"""
+                            You are a cynical, expert Options Trader.
+                            
+                            DATA:
+                            {context_data}
+                            
+                            USER QUESTION:
+                            {user_question}
+                            
+                            INSTRUCTIONS:
+                            1. **Analyze the Value:** If Delta is < 0.20, call it a "Lotto Ticket". If IV > 30%, call it "Expensive".
+                            2. **Compare Risks:** If comparing strikes, explicitly say which one is the "Investment" and which is the "Gamble".
+                            3. **Direct Answer:** Answer the user's question with a "Trader's Verdict". Don't be vague.
+                            """
                             st.write(model.generate_content(prompt).text)
                         except Exception as e: st.error(f"Error: {e}")
                 else: st.error("❌ API Key not found!")
@@ -396,52 +391,24 @@ if ticker:
             st.write("Visualize how time decay (Theta) eats your profit if the stock stays flat.")
             fig_sim = plot_simulation(current_price, strike_price, days_left, contract_iv, purchase_price=theo_price)
             st.pyplot(fig_sim)
-            
-            st.info(f"""
-            **How to read this chart:**
-            - 🔵 **Blue Line:** Your P&L TODAY.
-            - 🟡 **Yellow Line:** Your P&L in {int(days_left/2)} days.
-            - 🔴 **Red Line:** Your P&L at Expiration.
-            """)
+            st.info(f"**How to read:**\n- 🔵 Blue: Today\n- 🟡 Yellow: Halfway to Exp\n- 🔴 Red: At Expiration")
 
-        # --- TAB 12: FLOW MONITOR (NEW) ---
         with tab12:
             st.header("🌊 Market Flow: Bulls vs Bears")
-            
-            # 1. Total Volume & Put/Call Ratio
-            total_call_vol = calls['volume'].sum()
-            total_put_vol = puts['volume'].sum()
-            
-            if total_call_vol > 0:
-                pcr = total_put_vol / total_call_vol
-            else:
-                pcr = 0
+            total_call_vol = calls['volume'].sum(); total_put_vol = puts['volume'].sum()
+            pcr = total_put_vol / total_call_vol if total_call_vol > 0 else 0
             
             c1, c2, c3 = st.columns(3)
-            c1.metric("Total Call Volume (Bulls)", f"{int(total_call_vol):,}", delta_color="normal")
-            c2.metric("Total Put Volume (Bears)", f"{int(total_put_vol):,}", delta_color="inverse")
-            
-            # PCR Color Logic
-            if pcr > 1.0: sentiment = "🐻 Bearish (More Puts)"
-            elif pcr < 0.7: sentiment = "🐂 Bullish (More Calls)"
+            c1.metric("Call Vol", f"{int(total_call_vol):,}"); c2.metric("Put Vol", f"{int(total_put_vol):,}")
+            if pcr > 1.0: sentiment = "🐻 Bearish"
+            elif pcr < 0.7: sentiment = "🐂 Bullish"
             else: sentiment = "⚖️ Neutral"
-            
-            c3.metric("Put/Call Ratio", f"{pcr:.2f}", sentiment)
-            
+            c3.metric("PCR", f"{pcr:.2f}", sentiment)
             st.markdown("---")
-            
-            # 2. Battle Map Chart
             st.subheader("⚔️ The Battle Map")
-            st.write("Are the Bears attacking your strike price?")
             fig_flow = plot_flow_battle(calls, puts, strike_price)
             st.pyplot(fig_flow)
-            
-            st.info("""
-            **How to read the Battle Map:**
-            - **Green Bars:** Call Volume (People betting UP).
-            - **Red Bars:** Put Volume (People betting DOWN or hedging).
-            - **Big Red Bar at your Strike?** Watch out! Bears are active there.
-            """)
+            st.info("Green = Bulls. Red = Bears. Watch for tall Red Bars near your strike!")
 
     except Exception as e:
         if "Too Many Requests" in str(e):
