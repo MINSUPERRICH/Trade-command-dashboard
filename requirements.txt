@@ -4,8 +4,8 @@ pandas
 numpy
 scipy
 plotly
+matplotlib
 google-generativeai
 xlsxwriter
 python-docx
-matplotlib
 openpyxl
