@@ -8,6 +8,10 @@ from datetime import datetime, timedelta
 import time
 import google.generativeai as genai
 from PIL import Image
+from io import BytesIO
+import xlsxwriter
+from docx import Document
+from docx.shared import Inches
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="Options Command Center", layout="wide", page_icon="🚀")
@@ -104,19 +108,17 @@ def calculate_greeks(S, K, T, r, sigma, option_type='call'):
     theta_daily = theta_annual / 365.0
     return delta, gamma, theta_daily
 
-# --- INTERACTIVE CHARTS ---
+# --- CHARTING FUNCTIONS ---
 def plot_greeks_interactive(current_price, strike, days_left, iv, risk_free=0.045):
     prices = np.linspace(strike * 0.8, strike * 1.2, 100)
     T = max(days_left / 365.0, 0.001)
     deltas = [calculate_greeks(p, strike, T, risk_free, iv)[0] for p in prices]
     gammas = [calculate_greeks(p, strike, T, risk_free, iv)[1] for p in prices]
-
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=prices, y=deltas, mode='lines', name='Delta (Speed)', line=dict(color='#4DA6FF', width=3)))
     fig.add_trace(go.Scatter(x=prices, y=gammas, mode='lines', name='Gamma (Acceleration)', line=dict(color='#00FF7F', width=2, dash='dash'), yaxis="y2"))
     curr_d, curr_g, _ = calculate_greeks(current_price, strike, T, risk_free, iv)
     fig.add_trace(go.Scatter(x=[current_price], y=[curr_d], mode='markers', name='You Are Here', marker=dict(color='white', size=12, line=dict(color='#4DA6FF', width=2))))
-
     fig.update_layout(title="Speed (Delta) vs Acceleration (Gamma)", xaxis_title="Stock Price", yaxis_title="Delta", yaxis2=dict(title="Gamma", overlaying="y", side="right"), template="plotly_dark", hovermode="x unified", dragmode='pan', height=500)
     return fig
 
@@ -128,7 +130,6 @@ def plot_simulation_interactive(S, K, days_left, iv, r=0.045, purchase_price=0):
     pnl_half = [black_scholes_price(p, K, T2, r, iv) - purchase_price for p in prices]
     T3 = 0.0001
     pnl_exp = [black_scholes_price(p, K, T3, r, iv) - purchase_price for p in prices]
-
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=prices, y=pnl_today, mode='lines', name='Today (T+0)', line=dict(color='#4DA6FF', width=3)))
     fig.add_trace(go.Scatter(x=prices, y=pnl_half, mode='lines', name=f'Halfway (T+{int(days_left/2)})', line=dict(color='#FFD700', width=2, dash='dash')))
@@ -147,7 +148,6 @@ def plot_flow_battle_interactive(calls, puts, current_strike):
     except: idx = (np.abs(np.array(strikes) - current_strike)).argmin()
     start_idx = max(0, idx - 4); end_idx = min(len(strikes), idx + 5)
     subset = df.iloc[start_idx:end_idx]
-
     fig = go.Figure()
     fig.add_trace(go.Bar(x=subset.index, y=subset['Call Vol'], name='Bulls (Calls)', marker_color='#00FF7F'))
     fig.add_trace(go.Bar(x=subset.index, y=subset['Put Vol'], name='Bears (Puts)', marker_color='#FF4B4B'))
@@ -161,7 +161,6 @@ def plot_whale_activity_interactive(calls_df, current_strike):
     start_idx = max(0, idx - 3); end_idx = min(len(strikes), idx + 4)
     relevant_strikes = strikes[start_idx:end_idx]
     subset = calls_df[calls_df['strike'].isin(relevant_strikes)].copy()
-
     fig = go.Figure()
     fig.add_trace(go.Bar(x=subset['strike'], y=subset['openInterest'], name='Open Interest (Old)', marker_color='#4DA6FF', opacity=0.6))
     fig.add_trace(go.Bar(x=subset['strike'], y=subset['volume'], name='Volume (New)', marker_color='#00FF7F'))
@@ -181,49 +180,64 @@ def calculate_max_pain(options_chain):
     if df_pain.empty: return 0
     return df_pain.loc[df_pain['total_loss'].idxmin()]['strike']
 
-# --- SCANNER FUNCTION (NEW) ---
+# --- SCANNER FUNCTION ---
 def scan_atm_options(tickers):
     results = []
     progress_bar = st.progress(0)
     status_text = st.empty()
-    
     for i, ticker in enumerate(tickers):
         try:
             status_text.text(f"Scanning {ticker}...")
             stock = yf.Ticker(ticker)
             current_price = stock.history(period="1d")['Close'].iloc[-1]
-            
-            # Get nearest expiration
             expirations = stock.options
             if not expirations: continue
-            nearest_date = expirations[0] # Sniper Mode: Closest Date
-            
-            # Get Chain
+            nearest_date = expirations[0] 
             opt_chain = stock.option_chain(nearest_date)
             calls = opt_chain.calls
-            
-            # Find ATM Strike (Closest to Price)
             calls['diff'] = abs(calls['strike'] - current_price)
             atm_call = calls.loc[calls['diff'].idxmin()]
-            
             results.append({
-                "Ticker": ticker,
-                "Stock Price": round(current_price, 2),
-                "ATM Strike": atm_call['strike'],
-                "Exp Date": nearest_date,
-                "Option Price": atm_call['lastPrice'],
-                "Volume": atm_call['volume'],
-                "Open Int": atm_call['openInterest'],
-                "IV": round(atm_call['impliedVolatility'] * 100, 1)
+                "Ticker": ticker, "Stock Price": round(current_price, 2), "ATM Strike": atm_call['strike'],
+                "Exp Date": nearest_date, "Option Price": atm_call['lastPrice'], "Volume": atm_call['volume'],
+                "Open Int": atm_call['openInterest'], "IV": round(atm_call['impliedVolatility'] * 100, 1)
             })
-        except Exception as e:
-            pass # Skip bad tickers
-        
+        except Exception as e: pass
         progress_bar.progress((i + 1) / len(tickers))
-        
-    status_text.empty()
-    progress_bar.empty()
+    status_text.empty(); progress_bar.empty()
     return pd.DataFrame(results)
+
+# --- WORD REPORT GENERATOR ---
+def generate_word_report(ticker, price, strike, exp, d, g, t, ai_analysis_text):
+    doc = Document()
+    doc.add_heading(f'Strategy Report: {ticker} ${strike} Call', 0)
+    
+    doc.add_paragraph(f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    
+    # Overview Table
+    table = doc.add_table(rows=1, cols=4)
+    table.style = 'Table Grid'
+    hdr_cells = table.rows[0].cells
+    hdr_cells[0].text = 'Current Price'; hdr_cells[1].text = 'Expiration'; hdr_cells[2].text = 'Delta'; hdr_cells[3].text = 'Theta'
+    row_cells = table.add_row().cells
+    row_cells[0].text = f"${price:.2f}"; row_cells[1].text = str(exp); row_cells[2].text = f"{d:.2f}"; row_cells[3].text = f"{t:.3f}"
+    
+    # AI Analysis Section
+    doc.add_heading('AI Strategic Analysis', level=1)
+    if ai_analysis_text:
+        doc.add_paragraph(ai_analysis_text)
+    else:
+        doc.add_paragraph("No AI Analysis generated for this session.")
+        
+    doc.add_heading('Key Metrics (Greeks)', level=1)
+    doc.add_paragraph(f"Delta ({d:.2f}): This represents your directional exposure. You make ${d:.2f} for every $1 move up.")
+    doc.add_paragraph(f"Theta ({t:.3f}): This is your time decay. You lose ${abs(t)*100:.2f} per contract per day.")
+
+    doc.add_paragraph("\n-- End of Report --")
+    
+    bio = BytesIO()
+    doc.save(bio)
+    return bio
 
 # --- MAIN APP ---
 st.sidebar.markdown("## ⚙️ Settings")
@@ -232,6 +246,7 @@ strike_price = st.sidebar.number_input("Strike Price ($)", value=148.0)
 
 if st.sidebar.button("🔄 Force Refresh Data"):
     st.cache_data.clear()
+    st.session_state.pop("ai_analysis_result", None) # Clear AI cache on refresh
     st.rerun()
 
 if ticker:
@@ -244,8 +259,7 @@ if ticker:
             
             expirations = stock_conn.options
             if not expirations:
-                st.error("No options data found.")
-                st.stop()
+                st.error("No options data found."); st.stop()
             selected_date = st.sidebar.selectbox("Expiration Date", expirations)
             
             full_chain, calls, puts = get_option_chain_data(ticker, selected_date)
@@ -255,158 +269,164 @@ if ticker:
             days_left = (datetime.strptime(selected_date, "%Y-%m-%d") - datetime.now()).days
             if days_left < 1: days_left = 1
             theo_price = black_scholes_price(current_price, strike_price, days_left/365, 0.045, contract_iv)
-        
+            d, g, t = calculate_greeks(current_price, strike_price, days_left/365, 0.045, contract_iv)
+
         st.title(f"📊 {ticker} Command Center 🔒")
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Current Price", f"${current_price:.2f}", f"{current_price - prev_close:.2f}")
-        col2.metric("Your Strike", f"${strike_price:.2f}")
-        col3.metric("Selected Expiration", selected_date)
+        
+        # --- GLOBAL DOWNLOAD BUTTON (WORD) ---
+        col_main1, col_main2 = st.columns([3,1])
+        with col_main1:
+            st.caption("Live Data Connected")
+        with col_main2:
+            # Check if analysis exists in session state to include in report
+            analysis_text = st.session_state.get("ai_analysis_result", "Analysis not run yet.")
+            report_file = generate_word_report(ticker, current_price, strike_price, selected_date, d, g, t, analysis_text)
+            st.download_button(
+                label="📄 Download Full Report (Word)",
+                data=report_file.getvalue(),
+                file_name=f"{ticker}_Strategy_Report.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            )
+
         st.markdown("---")
 
         # --- TABS ---
-        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13 = st.tabs([
+        tabs = st.tabs([
             "1. Price", "2. Volume", "3. IV", "4. Rule of 16", 
             "5. Whale Detector", "6. Risk & Profit", "7. Max Pain", "8. News", 
             "9. 🤖 Chart Analyst", "10. 💬 Strategy Engine", "11. 🔮 Future Simulator", "12. 🌊 Flow Monitor",
             "13. 🔍 ATM Scanner"
         ])
 
-        with tab1:
-            st.line_chart(history['Close'])
-            gap = current_price - prev_close
-            if abs(gap) < 0.50: st.success("✅ Stable Open")
-            else: st.warning("⚠️ Volatile Open")
+        with tabs[0]: st.line_chart(history['Close'])
+        with tabs[1]: st.metric("Volume", f"{info.get('volume', 0):,}")
+        with tabs[2]: st.metric("Implied Volatility", f"{contract_iv * 100:.2f}%")
+        with tabs[3]: st.metric("Expected Daily Move", f"${(contract_iv * 100 / 16) / 100 * current_price:.2f}")
 
-        with tab2: st.metric("Volume", f"{info.get('volume', 0):,}")
-        with tab3: st.metric("Implied Volatility", f"{contract_iv * 100:.2f}%")
-        with tab4: st.metric("Expected Daily Move", f"${(contract_iv * 100 / 16) / 100 * current_price:.2f}")
-
-        with tab5:
+        with tabs[4]:
             st.header("Whale Detector")
             fig_whale = plot_whale_activity_interactive(calls, strike_price)
             st.plotly_chart(fig_whale, use_container_width=True, config={'scrollZoom': True})
 
-        with tab6:
+        with tabs[5]:
             st.header("Risk & Profit Hub")
-            d, g, t = calculate_greeks(current_price, strike_price, days_left/365, 0.045, contract_iv)
             c1, c2, c3 = st.columns(3)
             c1.metric("Delta", f"{d:.2f}"); c2.metric("Gamma", f"{g:.3f}"); c3.metric("Theta", f"{t:.3f}")
             fig_greeks = plot_greeks_interactive(current_price, strike_price, days_left, contract_iv)
             st.plotly_chart(fig_greeks, use_container_width=True, config={'scrollZoom': True})
-            st.markdown("---")
-            st.subheader("🎯 Profit Target Calculator")
-            col_calc1, col_calc2 = st.columns([1, 2])
-            with col_calc1: desired_profit = st.number_input("Desired Profit ($)", value=50, step=10)
-            with col_calc2:
-                if d > 0.001:
-                    price_change_needed = desired_profit / 100
-                    stock_move_needed = price_change_needed / d
-                    target_stock_price = current_price + stock_move_needed
-                    st.markdown(f"<div class='profit-box' style='color: white;'>Target Stock Price: <b>${target_stock_price:.2f}</b><br>(Move: +${stock_move_needed:.2f})</div>", unsafe_allow_html=True)
-                else: st.warning("⚠️ Delta is 0. Cannot calculate target.")
-            st.markdown("---")
-            st.subheader("🗓️ Holiday Decay Calculator")
-            holidays = st.number_input("Days market is closed", value=1, step=1)
-            est_loss = abs(t) * holidays * 100
-            st.markdown(f"<div class='theta-box' style='color: white;'>Estimated Loss: <b>${est_loss:.2f} per contract</b></div>", unsafe_allow_html=True)
 
-        with tab7: st.metric("Max Pain", f"${calculate_max_pain(full_chain):.2f}")
-        with tab8:
+        with tabs[6]: st.metric("Max Pain", f"${calculate_max_pain(full_chain):.2f}")
+        with tabs[7]:
             try: 
                 for item in stock_conn.news[:3]: st.markdown(f"- [{item['title']}]({item['link']})")
             except: st.write("No news found.")
 
-        with tab9:
+        # --- TAB 9: AI ANALYST (FIXED PERSISTENCE) ---
+        with tabs[8]:
             st.header("🤖 AI Chart Analyst")
-            st.write("Upload screenshots for expert battle analysis.")
-            available_models = ["models/gemini-2.0-flash-exp", "models/gemini-2.0-flash"]
-            selected_model = st.selectbox("🧠 Select Model:", available_models, index=0)
+            
+            # 1. Initialize Session State for this tab if not present
+            if "ai_analysis_result" not in st.session_state:
+                st.session_state["ai_analysis_result"] = ""
 
             uploaded_files = st.file_uploader("Upload Screenshots", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
+            
             if uploaded_files and st.button("Analyze Images"):
                 if "api_keys" in st.secrets and "gemini" in st.secrets["api_keys"]:
-                    secure_key = st.secrets["api_keys"]["gemini"]
-                    genai.configure(api_key=secure_key)
-                    with st.spinner(f"🤖 Analyzing Battleground..."):
+                    genai.configure(api_key=st.secrets["api_keys"]["gemini"])
+                    with st.spinner(f"🤖 analyzing..."):
                         try:
-                            model = genai.GenerativeModel(selected_model)
-                            prompt = "You are a Senior Options Strategist. Analyze these charts for 'Walls', 'Squeezes', and 'Traps'. Be decisive."
+                            model = genai.GenerativeModel("models/gemini-2.0-flash-exp")
+                            prompt = "You are a Senior Options Strategist. Analyze these charts. Look for 'Walls', 'Squeezes', and 'Traps'. Be decisive."
                             content = [prompt] + [Image.open(f) for f in uploaded_files]
                             response = model.generate_content(content)
-                            st.markdown("### 📝 Strategic Report"); st.write(response.text)
+                            
+                            # 2. SAVE RESULT TO SESSION STATE
+                            st.session_state["ai_analysis_result"] = response.text
+                            st.rerun() # Force refresh to show saved state
                         except Exception as e: st.error(f"Error: {e}")
-                else: st.error("❌ API Key not found!")
+            
+            # 3. DISPLAY SAVED RESULT (Even after switching tabs)
+            if st.session_state["ai_analysis_result"]:
+                st.markdown("### 📝 Strategic Report (Saved)")
+                st.write(st.session_state["ai_analysis_result"])
+                if st.button("🗑️ Clear Analysis"):
+                    st.session_state["ai_analysis_result"] = ""
+                    st.rerun()
 
-        with tab10:
+        # --- TAB 10: STRATEGY ENGINE (FIXED PERSISTENCE) ---
+        with tabs[9]:
             st.header("💬 AI Strategy Engine")
+            
+            # Initialize Session State
+            if "strategy_chat_history" not in st.session_state:
+                st.session_state["strategy_chat_history"] = []
+
             col_comp1, col_comp2 = st.columns([1,3])
             with col_comp1: comp_strike = st.number_input("Compare with Strike ($)", value=0.0, step=1.0)
             with col_comp2: user_question = st.text_input("Your Question:", placeholder="e.g. Is this a trap?")
 
             if user_question:
                 if "api_keys" in st.secrets and "gemini" in st.secrets["api_keys"]:
-                    secure_key = st.secrets["api_keys"]["gemini"]
-                    genai.configure(api_key=secure_key)
+                    genai.configure(api_key=st.secrets["api_keys"]["gemini"])
+                    context_data = f"Ticker {ticker} | Price ${current_price:.2f} | Strike ${strike_price:.2f} | IV {contract_iv*100:.2f}%"
                     
-                    context_data = f"MAIN: Ticker {ticker} | Price ${current_price:.2f} | Strike ${strike_price:.2f} | IV {contract_iv*100:.2f}% | Delta {d:.3f} | Theta {t:.3f}"
-                    if comp_strike > 0:
-                        try:
-                            c_iv = calls.iloc[(calls['strike'] - comp_strike).abs().argsort()[:1]].iloc[0]['impliedVolatility']
-                            c_d, _, c_t = calculate_greeks(current_price, comp_strike, days_left/365, 0.045, c_iv)
-                            context_data += f"\nCOMPARE: Strike ${comp_strike} | Delta {c_d:.3f} | Theta {c_t:.3f}"
-                        except: pass
-
-                    with st.spinner("🤖 Consulting Senior Trader..."):
+                    with st.spinner("Thinking..."):
                         try:
                             model = genai.GenerativeModel("models/gemini-2.0-flash-exp")
-                            prompt = f"You are a cynical, expert Options Trader. Analyze: {context_data}\nUser: {user_question}\nVerdict:"
-                            st.write(model.generate_content(prompt).text)
+                            prompt = f"Trader context: {context_data}. User: {user_question}. Give a short, cynical trader verdict."
+                            response_text = model.generate_content(prompt).text
+                            
+                            # Save to History
+                            st.session_state["strategy_chat_history"].append((user_question, response_text))
                         except Exception as e: st.error(f"Error: {e}")
-                else: st.error("❌ API Key not found!")
 
-        with tab11:
+            # Display History
+            for q, a in st.session_state["strategy_chat_history"]:
+                st.info(f"**You:** {q}")
+                st.success(f"**AI:** {a}")
+            
+            if st.button("🗑️ Clear Chat"):
+                st.session_state["strategy_chat_history"] = []
+                st.rerun()
+
+        with tabs[10]:
             st.header("🔮 Future P&L Simulator")
             fig_sim = plot_simulation_interactive(current_price, strike_price, days_left, contract_iv, purchase_price=theo_price)
             st.plotly_chart(fig_sim, use_container_width=True, config={'scrollZoom': True})
-            st.info("💡 **Hover** over any line to see the exact value. **Scroll** to zoom in. **Click & Drag** to move.")
 
-        with tab12:
-            st.header("🌊 Market Flow: Bulls vs Bears")
-            total_call_vol = calls['volume'].sum(); total_put_vol = puts['volume'].sum()
-            pcr = total_put_vol / total_call_vol if total_call_vol > 0 else 0
-            
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Call Vol", f"{int(total_call_vol):,}"); c2.metric("Put Vol", f"{int(total_put_vol):,}")
-            c3.metric("PCR", f"{pcr:.2f}", "🐻 Bearish" if pcr > 1 else "🐂 Bullish")
-            st.markdown("---")
-            st.subheader("⚔️ Interactive Battle Map")
+        with tabs[11]:
+            st.header("🌊 Market Flow")
             fig_flow = plot_flow_battle_interactive(calls, puts, strike_price)
             st.plotly_chart(fig_flow, use_container_width=True, config={'scrollZoom': True})
 
-        # --- TAB 13: ATM SCANNER (NEW!) ---
-        with tab13:
+        # --- TAB 13: ATM SCANNER (WITH EXCEL EXPORT) ---
+        with tabs[12]:
             st.header("🔍 ATM Options Scanner")
-            st.markdown("Upload your **Excel (.xlsx)** file. The first column must contain Ticker Symbols (e.g., AAPL, TSLA).")
-            
             uploaded_list = st.file_uploader("Upload Momentum List", type=['xlsx'])
             
             if uploaded_list:
                 df_input = pd.read_excel(uploaded_list)
-                # Assume tickers are in the first column, convert to list
                 tickers = df_input.iloc[:, 0].dropna().astype(str).tolist()
-                
-                st.write(f"✅ Found **{len(tickers)}** tickers. Ready to scan.")
                 
                 if st.button("🚀 Start ATM Scan"):
                     result_df = scan_atm_options(tickers)
-                    st.success("Scan Complete!")
-                    st.dataframe(result_df, use_container_width=True)
-                    st.info("💡 **IV High?** Careful. **Volume Low?** Trap.")
+                    st.session_state["scan_results"] = result_df # Save results
+                
+                if "scan_results" in st.session_state:
+                    st.dataframe(st.session_state["scan_results"], use_container_width=True)
+                    
+                    # EXCEL DOWNLOADER
+                    buffer = BytesIO()
+                    with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+                        st.session_state["scan_results"].to_excel(writer, sheet_name='Sheet1', index=False)
+                    
+                    st.download_button(
+                        label="📥 Download Results as Excel",
+                        data=buffer.getvalue(),
+                        file_name="ATM_Scan_Results.xlsx",
+                        mime="application/vnd.ms-excel"
+                    )
 
     except Exception as e:
-        if "Too Many Requests" in str(e):
-             st.error("🚦 Traffic Jam. Retrying... wait.")
-             time.sleep(2)
-             st.rerun()
-        else:
-            st.error(f"Waiting for inputs... ({e})")
+        st.error(f"Error: {e}")
