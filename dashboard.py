@@ -38,12 +38,14 @@ def check_password():
 if not check_password():
     st.stop()
 
-# --- CSS STYLING (RESTORED COLORS) ---
+# --- CSS STYLING (COLORS RESTORED FROM SCREENSHOT 696) ---
 st.markdown("""
 <style>
     .metric-card { background-color: #0e1117; border: 1px solid #262730; padding: 20px; border-radius: 10px; color: white; }
-    .profit-box { background-color: #1E3D59; padding: 20px; border-radius: 10px; border-left: 5px solid #00FF7F; margin-bottom: 20px; color: white; }
-    .theta-box { background-color: #330000; padding: 20px; border-radius: 10px; border-left: 5px solid #FF4B4B; color: white; }
+    /* Blue Box with Green Stripe */
+    .profit-box { background-color: #1E3D59; padding: 20px; border-radius: 10px; border-left: 10px solid #00FF7F; margin-bottom: 20px; color: white; }
+    /* Dark Red Box with Red Stripe */
+    .theta-box { background-color: #330000; padding: 20px; border-radius: 10px; border-left: 10px solid #FF4B4B; color: white; }
     .stButton>button { width: 100%; }
 </style>
 """, unsafe_allow_html=True)
@@ -124,6 +126,45 @@ def calculate_max_pain(options_chain):
     return df_pain.loc[df_pain['total_loss'].idxmin()]['strike']
 
 # --- INTERACTIVE PLOTS (SCREEN) ---
+
+# 1. THE SIMULATOR (Restored to Match Screenshot 711)
+def plot_simulation_interactive(S, K, days_left, iv, r=0.045, purchase_price=0):
+    prices = np.linspace(S * 0.8, S * 1.2, 100)
+    
+    # Time 1: Today
+    T1 = max(days_left / 365.0, 0.0001)
+    pnl_today = [black_scholes_price(p, K, T1, r, iv) - purchase_price for p in prices]
+    
+    # Time 2: Halfway
+    T2 = max((days_left / 2) / 365.0, 0.0001)
+    pnl_half = [black_scholes_price(p, K, T2, r, iv) - purchase_price for p in prices]
+    
+    # Time 3: Expiration
+    T3 = 0.0001
+    pnl_exp = [black_scholes_price(p, K, T3, r, iv) - purchase_price for p in prices]
+
+    fig = go.Figure()
+    # Blue Solid
+    fig.add_trace(go.Scatter(x=prices, y=pnl_today, mode='lines', name='Today (T+0)', line=dict(color='#4DA6FF', width=3)))
+    # Yellow Dashed
+    fig.add_trace(go.Scatter(x=prices, y=pnl_half, mode='lines', name=f'Halfway (T+{int(days_left/2)})', line=dict(color='#FFD700', width=2, dash='dash')))
+    # Red Dotted
+    fig.add_trace(go.Scatter(x=prices, y=pnl_exp, mode='lines', name='Expiration (Max Risk)', line=dict(color='#FF4B4B', width=2, dash='dot')))
+    
+    fig.add_hline(y=0, line_color="white", opacity=0.5)
+    fig.add_vline(x=S, line_color="gray", line_dash="dash", annotation_text="Current Price")
+
+    fig.update_layout(
+        title="🔮 Future Simulator: Profit/Loss over Time",
+        xaxis_title="Stock Price ($)",
+        yaxis_title="Estimated P&L ($)",
+        template="plotly_dark",
+        hovermode="x unified",
+        dragmode='pan',
+        height=500
+    )
+    return fig
+
 def plot_greeks_interactive(current_price, strike, days_left, iv):
     prices = np.linspace(strike * 0.8, strike * 1.2, 100)
     T = max(days_left / 365.0, 0.001)
@@ -135,18 +176,7 @@ def plot_greeks_interactive(current_price, strike, days_left, iv):
     fig.add_trace(go.Scatter(x=prices, y=deltas, mode='lines', name='Delta', line=dict(color='#4DA6FF', width=3)))
     fig.add_trace(go.Scatter(x=prices, y=gammas, mode='lines', name='Gamma', line=dict(color='#00FF7F', width=2, dash='dash'), yaxis="y2"))
     fig.add_trace(go.Scatter(x=[current_price], y=[curr_d], mode='markers', name='You', marker=dict(color='white', size=10)))
-    fig.update_layout(title="Greeks", template="plotly_dark", height=450, yaxis2=dict(overlaying="y", side="right"), dragmode='pan')
-    return fig
-
-def plot_simulation_interactive(S, K, days_left, iv):
-    prices = np.linspace(S * 0.8, S * 1.2, 100)
-    T1 = max(days_left / 365.0, 0.0001)
-    pnl_today = [black_scholes_price(p, K, T1, 0.045, iv) - black_scholes_price(S, K, T1, 0.045, iv) for p in prices]
-    
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=prices, y=pnl_today, mode='lines', name='Today', line=dict(color='#4DA6FF', width=3)))
-    fig.add_hline(y=0, line_color="white", opacity=0.5)
-    fig.update_layout(title="Future Simulator", template="plotly_dark", height=500, dragmode='pan')
+    fig.update_layout(title="Greeks Profile", template="plotly_dark", height=450, yaxis2=dict(overlaying="y", side="right"), dragmode='pan')
     return fig
 
 def plot_whale_activity_interactive(calls_df, current_strike):
@@ -190,7 +220,7 @@ def create_static_plots(ticker, S, K, days, iv, calls):
     ax1.bar(x-0.2, sub['openInterest'], 0.4, label='OI', color='#4DA6FF')
     ax1.bar(x+0.2, sub['volume'], 0.4, label='Vol', color='#00FF7F')
     ax1.set_xticks(x); ax1.set_xticklabels(sub['strike'].astype(int))
-    ax1.set_title(f"Whale: {ticker}"); ax1.legend()
+    ax1.set_title(f"Whale Activity: {ticker}"); ax1.legend()
     b1 = BytesIO(); fig1.savefig(b1, format='png'); b1.seek(0); plots['whale'] = b1
     plt.close(fig1)
 
@@ -314,13 +344,15 @@ if ticker:
             st.header("Whale Detector")
             st.plotly_chart(plot_whale_activity_interactive(calls, strike_price), use_container_width=True, config={'scrollZoom': True})
 
-        with tabs[5]: # Greeks (RESTORED CALCULATOR)
+        with tabs[5]: # Greeks
             st.header("Risk & Profit Hub")
             c1, c2, c3 = st.columns(3)
             c1.metric("Delta", f"{d:.2f}"); c2.metric("Gamma", f"{g:.3f}"); c3.metric("Theta", f"{t:.3f}")
             st.plotly_chart(plot_greeks_interactive(current_price, strike_price, days_left, contract_iv), use_container_width=True, config={'scrollZoom': True})
             
             st.markdown("---")
+            
+            # --- PROFIT TARGET & HOLIDAY DECAY (COLORS RESTORED) ---
             st.subheader("🎯 Profit Target Calculator")
             c_calc1, c_calc2 = st.columns([1, 2])
             with c_calc1: desired_profit = st.number_input("Desired Profit ($)", value=50, step=10)
@@ -328,12 +360,24 @@ if ticker:
                 if d > 0.001:
                     move = (desired_profit / 100) / d
                     target = current_price + move
-                    st.markdown(f"<div class='profit-box'>Target Stock Price: <b>${target:.2f}</b><br>(Move: +${move:.2f})</div>", unsafe_allow_html=True)
+                    # CSS CLASS INJECTION for BLUE/GREEN
+                    st.markdown(f"""
+                    <div class="profit-box">
+                        <h4 style='margin:0'>Target Stock Price: <b>${target:.2f}</b></h4>
+                        <p style='margin:0'>Stock needs to move: +${move:.2f}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
             
             st.subheader("🗓️ Holiday Decay Calculator")
             holidays = st.number_input("Days Closed", 1)
             loss = abs(t) * holidays * 100
-            st.markdown(f"<div class='theta-box'>Estimated Loss: <b>${loss:.2f}</b></div>", unsafe_allow_html=True)
+            # CSS CLASS INJECTION for RED
+            st.markdown(f"""
+            <div class="theta-box">
+                <h4 style='margin:0'>Estimated Loss: <b>${loss:.2f} per contract</b></h4>
+                <p style='margin:0'>While you sleep...</p>
+            </div>
+            """, unsafe_allow_html=True)
 
         with tabs[6]: st.metric("Max Pain", f"${calculate_max_pain(full_chain):.2f}")
         with tabs[7]:
@@ -369,7 +413,9 @@ if ticker:
 
         with tabs[10]: # Sim
             st.header("🔮 Future Simulator")
-            st.plotly_chart(plot_simulation_interactive(current_price, strike_price, days_left, contract_iv), use_container_width=True, config={'scrollZoom': True})
+            # RESTORED 3-LINE GRAPH
+            st.plotly_chart(plot_simulation_interactive(current_price, strike_price, days_left, contract_iv, purchase_price=theo_price), use_container_width=True, config={'scrollZoom': True})
+            st.info("💡 **Hover** over any line to see the exact value. **Scroll** to zoom in.")
 
         with tabs[11]: # Flow
             st.header("🌊 Market Flow")
