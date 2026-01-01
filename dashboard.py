@@ -3,8 +3,8 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 from scipy.stats import norm
-import plotly.graph_objects as go  # For Screen (Interactive)
-import matplotlib.pyplot as plt    # For Word Report (Safe)
+import plotly.graph_objects as go  # Interactive (Screen)
+import matplotlib.pyplot as plt    # Static (Word Report)
 from datetime import datetime, timedelta
 import time
 import random
@@ -38,7 +38,7 @@ def check_password():
 if not check_password():
     st.stop()
 
-# --- CSS STYLING ---
+# --- CSS STYLING (RESTORED COLORS) ---
 st.markdown("""
 <style>
     .metric-card { background-color: #0e1117; border: 1px solid #262730; padding: 20px; border-radius: 10px; color: white; }
@@ -55,7 +55,7 @@ def fetch_with_retry(func, *args, retries=3):
             return func(*args)
         except Exception as e:
             if "too many requests" in str(e).lower():
-                time.sleep(random.uniform(1, 3)) # Anti-block wait
+                time.sleep(random.uniform(1, 3))
                 continue
             raise e
     return func(*args)
@@ -123,45 +123,39 @@ def calculate_max_pain(options_chain):
     if df_pain.empty: return 0
     return df_pain.loc[df_pain['total_loss'].idxmin()]['strike']
 
-# --- 1. INTERACTIVE PLOTS (PLOTLY - FOR SCREEN) ---
-def plot_greeks_interactive(current_price, strike, days_left, iv, risk_free=0.045):
+# --- INTERACTIVE PLOTS (SCREEN) ---
+def plot_greeks_interactive(current_price, strike, days_left, iv):
     prices = np.linspace(strike * 0.8, strike * 1.2, 100)
     T = max(days_left / 365.0, 0.001)
-    deltas = [calculate_greeks(p, strike, T, risk_free, iv)[0] for p in prices]
-    gammas = [calculate_greeks(p, strike, T, risk_free, iv)[1] for p in prices]
-    curr_d, _, _ = calculate_greeks(current_price, strike, T, risk_free, iv)
+    deltas = [calculate_greeks(p, strike, T, 0.045, iv)[0] for p in prices]
+    gammas = [calculate_greeks(p, strike, T, 0.045, iv)[1] for p in prices]
+    curr_d, _, _ = calculate_greeks(current_price, strike, T, 0.045, iv)
     
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=prices, y=deltas, mode='lines', name='Delta (Speed)', line=dict(color='#4DA6FF', width=3)))
-    fig.add_trace(go.Scatter(x=prices, y=gammas, mode='lines', name='Gamma (Accel)', line=dict(color='#00FF7F', width=2, dash='dash'), yaxis="y2"))
+    fig.add_trace(go.Scatter(x=prices, y=deltas, mode='lines', name='Delta', line=dict(color='#4DA6FF', width=3)))
+    fig.add_trace(go.Scatter(x=prices, y=gammas, mode='lines', name='Gamma', line=dict(color='#00FF7F', width=2, dash='dash'), yaxis="y2"))
     fig.add_trace(go.Scatter(x=[current_price], y=[curr_d], mode='markers', name='You', marker=dict(color='white', size=10)))
-    fig.update_layout(title="Greeks", xaxis_title="Price", yaxis2=dict(overlaying="y", side="right"), template="plotly_dark", height=450, dragmode='pan')
+    fig.update_layout(title="Greeks", template="plotly_dark", height=450, yaxis2=dict(overlaying="y", side="right"), dragmode='pan')
     return fig
 
-def plot_simulation_interactive(S, K, days_left, iv, r=0.045, purchase_price=0):
+def plot_simulation_interactive(S, K, days_left, iv):
     prices = np.linspace(S * 0.8, S * 1.2, 100)
     T1 = max(days_left / 365.0, 0.0001)
-    pnl_today = [black_scholes_price(p, K, T1, r, iv) - purchase_price for p in prices]
-    T2 = max((days_left / 2) / 365.0, 0.0001)
-    pnl_half = [black_scholes_price(p, K, T2, r, iv) - purchase_price for p in prices]
-    T3 = 0.0001
-    pnl_exp = [black_scholes_price(p, K, T3, r, iv) - purchase_price for p in prices]
-
+    pnl_today = [black_scholes_price(p, K, T1, 0.045, iv) - black_scholes_price(S, K, T1, 0.045, iv) for p in prices]
+    
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=prices, y=pnl_today, mode='lines', name='Today', line=dict(color='#4DA6FF', width=3)))
-    fig.add_trace(go.Scatter(x=prices, y=pnl_half, mode='lines', name='Halfway', line=dict(color='#FFD700', width=2, dash='dash')))
-    fig.add_trace(go.Scatter(x=prices, y=pnl_exp, mode='lines', name='Expiration', line=dict(color='#FF4B4B', width=2, dash='dot')))
     fig.add_hline(y=0, line_color="white", opacity=0.5)
-    fig.update_layout(title="Future Simulator", xaxis_title="Price", yaxis_title="P&L", template="plotly_dark", height=500, dragmode='pan')
+    fig.update_layout(title="Future Simulator", template="plotly_dark", height=500, dragmode='pan')
     return fig
 
 def plot_whale_activity_interactive(calls_df, current_strike):
     strikes = sorted(calls_df['strike'].unique())
     try: idx = strikes.index(current_strike)
     except: idx = 0
-    start_idx = max(0, idx - 4); end_idx = min(len(strikes), idx + 5)
-    subset = calls_df[calls_df['strike'].isin(strikes[start_idx:end_idx])].copy()
-
+    start = max(0, idx - 4); end = min(len(strikes), idx + 5)
+    subset = calls_df[calls_df['strike'].isin(strikes[start:end])]
+    
     fig = go.Figure()
     fig.add_trace(go.Bar(x=subset['strike'], y=subset['openInterest'], name='OI', marker_color='#4DA6FF'))
     fig.add_trace(go.Bar(x=subset['strike'], y=subset['volume'], name='Vol', marker_color='#00FF7F'))
@@ -169,26 +163,23 @@ def plot_whale_activity_interactive(calls_df, current_strike):
     return fig
 
 def plot_flow_battle_interactive(calls, puts, current_strike):
-    c_vol = calls[['strike', 'volume']].groupby('strike').sum().rename(columns={'volume': 'Call Vol'})
-    p_vol = puts[['strike', 'volume']].groupby('strike').sum().rename(columns={'volume': 'Put Vol'})
-    df = pd.merge(c_vol, p_vol, on='strike', how='outer').fillna(0)
-    strikes = sorted(df.index)
-    try: idx = strikes.index(current_strike)
-    except: idx = (np.abs(np.array(strikes) - current_strike)).argmin()
-    start_idx = max(0, idx - 5); end_idx = min(len(strikes), idx + 6)
-    subset = df.iloc[start_idx:end_idx]
-
+    c = calls.groupby('strike')['volume'].sum(); p = puts.groupby('strike')['volume'].sum()
+    df = pd.merge(c, p, on='strike', how='outer').fillna(0).sort_index()
+    try: idx = df.index.get_loc(current_strike)
+    except: idx = len(df)//2
+    sub = df.iloc[max(0, idx-5):min(len(df), idx+6)]
+    
     fig = go.Figure()
-    fig.add_trace(go.Bar(x=subset.index, y=subset['Call Vol'], name='Bulls', marker_color='#00FF7F'))
-    fig.add_trace(go.Bar(x=subset.index, y=subset['Put Vol'], name='Bears', marker_color='#FF4B4B'))
+    fig.add_trace(go.Bar(x=sub.index, y=sub['volume_x'], name='Bulls', marker_color='#00FF7F'))
+    fig.add_trace(go.Bar(x=sub.index, y=sub['volume_y'], name='Bears', marker_color='#FF4B4B'))
     fig.update_layout(title="Battle Map", template="plotly_dark", height=450, dragmode='pan')
     return fig
 
-# --- 2. STATIC PLOTS (MATPLOTLIB - FOR WORD REPORT) ---
-def create_static_plots_for_report(ticker, S, K, days, iv, calls):
+# --- STATIC PLOTS (WORD REPORT) ---
+def create_static_plots(ticker, S, K, days, iv, calls):
     plots = {}
     
-    # Static Whale
+    # Whale
     strikes = sorted(calls['strike'].unique())
     try: idx = strikes.index(K)
     except: idx = 0
@@ -199,11 +190,11 @@ def create_static_plots_for_report(ticker, S, K, days, iv, calls):
     ax1.bar(x-0.2, sub['openInterest'], 0.4, label='OI', color='#4DA6FF')
     ax1.bar(x+0.2, sub['volume'], 0.4, label='Vol', color='#00FF7F')
     ax1.set_xticks(x); ax1.set_xticklabels(sub['strike'].astype(int))
-    ax1.set_title(f"Whale Activity: {ticker}"); ax1.legend()
+    ax1.set_title(f"Whale: {ticker}"); ax1.legend()
     b1 = BytesIO(); fig1.savefig(b1, format='png'); b1.seek(0); plots['whale'] = b1
     plt.close(fig1)
 
-    # Static Sim
+    # Sim
     prices = np.linspace(K*0.8, K*1.2, 50)
     T = max(days/365, 0.001)
     base = black_scholes_price(S, K, T, 0.045, iv)
@@ -212,8 +203,7 @@ def create_static_plots_for_report(ticker, S, K, days, iv, calls):
     fig2, ax2 = plt.subplots(figsize=(6,3))
     ax2.plot(prices, pnl, color='#4DA6FF')
     ax2.axhline(0, color='gray', linestyle='--')
-    ax2.axvline(S, color='red', linestyle=':')
-    ax2.set_title("P&L Simulator"); ax2.grid(True, alpha=0.3)
+    ax2.set_title("Simulator"); ax2.grid(True, alpha=0.3)
     b2 = BytesIO(); fig2.savefig(b2, format='png'); b2.seek(0); plots['sim'] = b2
     plt.close(fig2)
     
@@ -223,42 +213,28 @@ def create_static_plots_for_report(ticker, S, K, days, iv, calls):
 def generate_report(ticker, S, K, date, d, g, t, ai_txt, plots, scan_res):
     doc = Document()
     doc.add_heading(f"TRADING REPORT: {ticker}", 0)
-    doc.add_paragraph(f"Generated: {datetime.now().strftime('%Y-%m-%d')}")
+    doc.add_paragraph(f"Date: {datetime.now().strftime('%Y-%m-%d')}")
     
-    # Summary
-    doc.add_heading("1. Executive Summary", 1)
-    table = doc.add_table(rows=2, cols=4)
-    table.style = 'Table Grid'
-    row = table.rows[1].cells
-    row[0].text = ticker; row[1].text = f"${S:.2f}"; row[2].text = f"${K}"; row[3].text = str(date)
+    doc.add_heading("1. Summary", 1)
+    doc.add_paragraph(f"Price: ${S:.2f} | Strike: ${K} | Exp: {date}")
+    doc.add_paragraph(f"Greeks: Delta {d:.2f}, Theta {t:.3f}, Gamma {g:.3f}")
     
-    # Greeks
-    doc.add_heading("2. Greeks", 1)
-    doc.add_paragraph(f"Delta: {d:.2f} | Theta: {t:.3f} | Gamma: {g:.3f}")
+    doc.add_heading("2. AI Analysis", 1)
+    doc.add_paragraph(ai_txt if ai_txt else "No analysis run.")
     
-    # AI
-    doc.add_heading("3. AI Analysis", 1)
-    doc.add_paragraph(ai_txt if ai_txt else "No AI analysis run.")
-    
-    # Charts
-    doc.add_heading("4. Charts", 1)
+    doc.add_heading("3. Charts", 1)
     doc.add_picture(plots['whale'], width=Inches(5.5))
     doc.add_picture(plots['sim'], width=Inches(5.5))
     
-    # Scan Results
     if scan_res is not None and not scan_res.empty:
-        doc.add_heading("5. ATM Scan Results", 1)
-        st_table = doc.add_table(rows=1, cols=4)
-        st_table.style = 'Table Grid'
-        h = st_table.rows[0].cells
-        h[0].text = 'Ticker'; h[1].text = 'Strike'; h[2].text = 'Price'; h[3].text = 'Vol'
-        for _, r in scan_res.head(15).iterrows():
-            row = st_table.add_row().cells
-            row[0].text = str(r['Ticker'])
-            row[1].text = str(r['ATM Strike'])
-            row[2].text = str(r['Option Price'])
-            row[3].text = str(r['Volume'])
-
+        doc.add_heading("4. ATM Scan (Top 10)", 1)
+        t = doc.add_table(rows=1, cols=4); t.style = 'Table Grid'
+        h = t.rows[0].cells; h[0].text='Ticker'; h[1].text='Strike'; h[2].text='Price'; h[3].text='Vol'
+        for _, r in scan_res.head(10).iterrows():
+            row = t.add_row().cells
+            row[0].text=str(r['Ticker']); row[1].text=str(r['ATM Strike'])
+            row[2].text=str(r['Option Price']); row[3].text=str(r['Volume'])
+            
     b = BytesIO(); doc.save(b); return b
 
 # --- SCANNER ---
@@ -266,7 +242,7 @@ def run_scan(tickers):
     res = []
     bar = st.progress(0); txt = st.empty()
     for i, t in enumerate(tickers):
-        time.sleep(random.uniform(0.5, 1.5)) # Anti-block
+        time.sleep(random.uniform(0.5, 1.5))
         try:
             txt.text(f"Scanning {t}...")
             stk = yf.Ticker(t)
@@ -274,11 +250,8 @@ def run_scan(tickers):
             dates = stk.options
             if not dates: continue
             calls = stk.option_chain(dates[0]).calls
-            
-            # ATM Logic: Smallest difference between Strike and Current Price
             calls['diff'] = abs(calls['strike'] - curr)
             atm = calls.loc[calls['diff'].idxmin()]
-            
             res.append({
                 'Ticker': t, 'ATM Strike': atm['strike'], 'Exp Date': dates[0],
                 'Option Price': atm['lastPrice'], 'Volume': atm['volume'], 'Open Int': atm['openInterest']
@@ -305,7 +278,7 @@ if ticker:
             prev_close = info.get('previousClose', history['Close'].iloc[-2])
             
             expirations = stock_conn.options
-            if not expirations: st.error("No options data found."); st.stop()
+            if not expirations: st.error("No options data."); st.stop()
             selected_date = st.sidebar.selectbox("Expiration Date", expirations)
             
             full_chain, calls, puts = get_option_chain_data(ticker, selected_date)
@@ -324,7 +297,7 @@ if ticker:
         col3.metric("Selected Expiration", selected_date)
         st.markdown("---")
 
-        # --- 13 TABS RESTORED ---
+        # --- THE 13 TABS ---
         tabs = st.tabs([
             "1. Price", "2. Volume", "3. IV", "4. Rule of 16", 
             "5. Whale Detector", "6. Risk & Profit", "7. Max Pain", "8. News", 
@@ -334,18 +307,33 @@ if ticker:
 
         with tabs[0]: st.line_chart(history['Close'])
         with tabs[1]: st.metric("Volume", f"{info.get('volume', 0):,}")
-        with tabs[2]: st.metric("Implied Volatility", f"{contract_iv * 100:.2f}%")
+        with tabs[2]: st.metric("IV", f"{contract_iv * 100:.2f}%")
         with tabs[3]: st.metric("Expected Daily Move", f"${(contract_iv * 100 / 16) / 100 * current_price:.2f}")
 
         with tabs[4]: # Whale
             st.header("Whale Detector")
             st.plotly_chart(plot_whale_activity_interactive(calls, strike_price), use_container_width=True, config={'scrollZoom': True})
 
-        with tabs[5]: # Greeks
+        with tabs[5]: # Greeks (RESTORED CALCULATOR)
             st.header("Risk & Profit Hub")
             c1, c2, c3 = st.columns(3)
             c1.metric("Delta", f"{d:.2f}"); c2.metric("Gamma", f"{g:.3f}"); c3.metric("Theta", f"{t:.3f}")
             st.plotly_chart(plot_greeks_interactive(current_price, strike_price, days_left, contract_iv), use_container_width=True, config={'scrollZoom': True})
+            
+            st.markdown("---")
+            st.subheader("🎯 Profit Target Calculator")
+            c_calc1, c_calc2 = st.columns([1, 2])
+            with c_calc1: desired_profit = st.number_input("Desired Profit ($)", value=50, step=10)
+            with c_calc2:
+                if d > 0.001:
+                    move = (desired_profit / 100) / d
+                    target = current_price + move
+                    st.markdown(f"<div class='profit-box'>Target Stock Price: <b>${target:.2f}</b><br>(Move: +${move:.2f})</div>", unsafe_allow_html=True)
+            
+            st.subheader("🗓️ Holiday Decay Calculator")
+            holidays = st.number_input("Days Closed", 1)
+            loss = abs(t) * holidays * 100
+            st.markdown(f"<div class='theta-box'>Estimated Loss: <b>${loss:.2f}</b></div>", unsafe_allow_html=True)
 
         with tabs[6]: st.metric("Max Pain", f"${calculate_max_pain(full_chain):.2f}")
         with tabs[7]:
@@ -362,7 +350,7 @@ if ticker:
                     genai.configure(api_key=st.secrets["api_keys"]["gemini"])
                     try:
                         model = genai.GenerativeModel("models/gemini-2.0-flash-exp")
-                        prompt = "Analyze these charts for walls and traps."
+                        prompt = "Analyze for walls and traps."
                         content = [prompt] + [Image.open(f) for f in up_files]
                         with st.spinner("Analyzing..."):
                             st.session_state["ai_result"] = model.generate_content(content).text
@@ -397,15 +385,14 @@ if ticker:
             
             if "scan_results" in st.session_state:
                 st.dataframe(st.session_state["scan_results"], use_container_width=True)
-                # Excel Download
                 buffer = BytesIO()
                 with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
                     st.session_state["scan_results"].to_excel(writer, index=False)
                 st.download_button("📥 Download Excel", buffer.getvalue(), "ATM_Scan.xlsx", "application/vnd.ms-excel")
 
-        # --- REPORT EXPORT (SIDEBAR) ---
+        # --- REPORT EXPORT ---
         st.sidebar.markdown("---")
-        safe_plots = create_static_plots_for_report(ticker, current_price, strike_price, days_left, contract_iv, calls)
+        safe_plots = create_static_plots(ticker, current_price, strike_price, days_left, contract_iv, calls)
         scan_data = st.session_state.get("scan_results", None)
         
         report_file = generate_report(
