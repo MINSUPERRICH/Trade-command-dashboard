@@ -3,9 +3,8 @@ yfinance
 pandas
 numpy
 scipy
-matplotlib
-google-generativeai
 plotly
+google-generativeai
 xlsxwriter
 python-docx
 kaleido
