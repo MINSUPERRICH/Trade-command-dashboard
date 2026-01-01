@@ -3,11 +3,9 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 from scipy.stats import norm
-import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import time
-import random
 import google.generativeai as genai
 from PIL import Image
 
@@ -106,8 +104,7 @@ def calculate_greeks(S, K, T, r, sigma, option_type='call'):
     theta_daily = theta_annual / 365.0
     return delta, gamma, theta_daily
 
-# --- INTERACTIVE CHARTS (FIXED PAN/ZOOM) ---
-
+# --- INTERACTIVE CHARTS ---
 def plot_greeks_interactive(current_price, strike, days_left, iv, risk_free=0.045):
     prices = np.linspace(strike * 0.8, strike * 1.2, 100)
     T = max(days_left / 365.0, 0.001)
@@ -120,16 +117,7 @@ def plot_greeks_interactive(current_price, strike, days_left, iv, risk_free=0.04
     curr_d, curr_g, _ = calculate_greeks(current_price, strike, T, risk_free, iv)
     fig.add_trace(go.Scatter(x=[current_price], y=[curr_d], mode='markers', name='You Are Here', marker=dict(color='white', size=12, line=dict(color='#4DA6FF', width=2))))
 
-    fig.update_layout(
-        title="Speed (Delta) vs Acceleration (Gamma)",
-        xaxis_title="Stock Price",
-        yaxis_title="Delta",
-        yaxis2=dict(title="Gamma", overlaying="y", side="right"),
-        template="plotly_dark",
-        hovermode="x unified",
-        dragmode='pan',  # Enables Click-to-Drag
-        height=500
-    )
+    fig.update_layout(title="Speed (Delta) vs Acceleration (Gamma)", xaxis_title="Stock Price", yaxis_title="Delta", yaxis2=dict(title="Gamma", overlaying="y", side="right"), template="plotly_dark", hovermode="x unified", dragmode='pan', height=500)
     return fig
 
 def plot_simulation_interactive(S, K, days_left, iv, r=0.045, purchase_price=0):
@@ -145,19 +133,9 @@ def plot_simulation_interactive(S, K, days_left, iv, r=0.045, purchase_price=0):
     fig.add_trace(go.Scatter(x=prices, y=pnl_today, mode='lines', name='Today (T+0)', line=dict(color='#4DA6FF', width=3)))
     fig.add_trace(go.Scatter(x=prices, y=pnl_half, mode='lines', name=f'Halfway (T+{int(days_left/2)})', line=dict(color='#FFD700', width=2, dash='dash')))
     fig.add_trace(go.Scatter(x=prices, y=pnl_exp, mode='lines', name='Expiration (Max Risk)', line=dict(color='#FF4B4B', width=2, dash='dot')))
-    
     fig.add_hline(y=0, line_color="white", line_width=1, opacity=0.5)
     fig.add_vline(x=S, line_color="gray", line_dash="dash", annotation_text="Current Price")
-
-    fig.update_layout(
-        title="🔮 Interactive Future Simulator (Scroll Zoom + Click Drag)",
-        xaxis_title="Stock Price ($)",
-        yaxis_title="Estimated P&L ($)",
-        template="plotly_dark",
-        hovermode="x unified",
-        dragmode='pan', # Enables Click-to-Drag
-        height=600
-    )
+    fig.update_layout(title="🔮 Interactive Future Simulator", xaxis_title="Stock Price ($)", yaxis_title="Estimated P&L ($)", template="plotly_dark", hovermode="x unified", dragmode='pan', height=600)
     return fig
 
 def plot_flow_battle_interactive(calls, puts, current_strike):
@@ -173,17 +151,7 @@ def plot_flow_battle_interactive(calls, puts, current_strike):
     fig = go.Figure()
     fig.add_trace(go.Bar(x=subset.index, y=subset['Call Vol'], name='Bulls (Calls)', marker_color='#00FF7F'))
     fig.add_trace(go.Bar(x=subset.index, y=subset['Put Vol'], name='Bears (Puts)', marker_color='#FF4B4B'))
-
-    fig.update_layout(
-        title="⚔️ Interactive Battle Map",
-        xaxis_title="Strike Price",
-        yaxis_title="Volume",
-        barmode='group',
-        template="plotly_dark",
-        hovermode="x unified",
-        dragmode='pan',
-        height=500
-    )
+    fig.update_layout(title="⚔️ Interactive Battle Map", xaxis_title="Strike Price", yaxis_title="Volume", barmode='group', template="plotly_dark", hovermode="x unified", dragmode='pan', height=500)
     return fig
 
 def plot_whale_activity_interactive(calls_df, current_strike):
@@ -197,17 +165,7 @@ def plot_whale_activity_interactive(calls_df, current_strike):
     fig = go.Figure()
     fig.add_trace(go.Bar(x=subset['strike'], y=subset['openInterest'], name='Open Interest (Old)', marker_color='#4DA6FF', opacity=0.6))
     fig.add_trace(go.Bar(x=subset['strike'], y=subset['volume'], name='Volume (New)', marker_color='#00FF7F'))
-
-    fig.update_layout(
-        title="Whale Detector (Hover to see Counts)",
-        xaxis_title="Strike Price",
-        yaxis_title="Contracts",
-        barmode='group',
-        template="plotly_dark",
-        hovermode="x unified",
-        dragmode='pan',
-        height=500
-    )
+    fig.update_layout(title="Whale Detector (Hover to see Counts)", xaxis_title="Strike Price", yaxis_title="Contracts", barmode='group', template="plotly_dark", hovermode="x unified", dragmode='pan', height=500)
     return fig
 
 def calculate_max_pain(options_chain):
@@ -222,6 +180,50 @@ def calculate_max_pain(options_chain):
     df_pain = pd.DataFrame(max_pain_data)
     if df_pain.empty: return 0
     return df_pain.loc[df_pain['total_loss'].idxmin()]['strike']
+
+# --- SCANNER FUNCTION (NEW) ---
+def scan_atm_options(tickers):
+    results = []
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    for i, ticker in enumerate(tickers):
+        try:
+            status_text.text(f"Scanning {ticker}...")
+            stock = yf.Ticker(ticker)
+            current_price = stock.history(period="1d")['Close'].iloc[-1]
+            
+            # Get nearest expiration
+            expirations = stock.options
+            if not expirations: continue
+            nearest_date = expirations[0] # Sniper Mode: Closest Date
+            
+            # Get Chain
+            opt_chain = stock.option_chain(nearest_date)
+            calls = opt_chain.calls
+            
+            # Find ATM Strike (Closest to Price)
+            calls['diff'] = abs(calls['strike'] - current_price)
+            atm_call = calls.loc[calls['diff'].idxmin()]
+            
+            results.append({
+                "Ticker": ticker,
+                "Stock Price": round(current_price, 2),
+                "ATM Strike": atm_call['strike'],
+                "Exp Date": nearest_date,
+                "Option Price": atm_call['lastPrice'],
+                "Volume": atm_call['volume'],
+                "Open Int": atm_call['openInterest'],
+                "IV": round(atm_call['impliedVolatility'] * 100, 1)
+            })
+        except Exception as e:
+            pass # Skip bad tickers
+        
+        progress_bar.progress((i + 1) / len(tickers))
+        
+    status_text.empty()
+    progress_bar.empty()
+    return pd.DataFrame(results)
 
 # --- MAIN APP ---
 st.sidebar.markdown("## ⚙️ Settings")
@@ -262,10 +264,11 @@ if ticker:
         st.markdown("---")
 
         # --- TABS ---
-        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12 = st.tabs([
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13 = st.tabs([
             "1. Price", "2. Volume", "3. IV", "4. Rule of 16", 
             "5. Whale Detector", "6. Risk & Profit", "7. Max Pain", "8. News", 
-            "9. 🤖 Chart Analyst", "10. 💬 Strategy Engine", "11. 🔮 Future Simulator", "12. 🌊 Flow Monitor"
+            "9. 🤖 Chart Analyst", "10. 💬 Strategy Engine", "11. 🔮 Future Simulator", "12. 🌊 Flow Monitor",
+            "13. 🔍 ATM Scanner"
         ])
 
         with tab1:
@@ -281,7 +284,6 @@ if ticker:
         with tab5:
             st.header("Whale Detector")
             fig_whale = plot_whale_activity_interactive(calls, strike_price)
-            # ENABLED SCROLL ZOOM AND PAN
             st.plotly_chart(fig_whale, use_container_width=True, config={'scrollZoom': True})
 
         with tab6:
@@ -289,11 +291,8 @@ if ticker:
             d, g, t = calculate_greeks(current_price, strike_price, days_left/365, 0.045, contract_iv)
             c1, c2, c3 = st.columns(3)
             c1.metric("Delta", f"{d:.2f}"); c2.metric("Gamma", f"{g:.3f}"); c3.metric("Theta", f"{t:.3f}")
-            
             fig_greeks = plot_greeks_interactive(current_price, strike_price, days_left, contract_iv)
-            # ENABLED SCROLL ZOOM AND PAN
             st.plotly_chart(fig_greeks, use_container_width=True, config={'scrollZoom': True})
-            
             st.markdown("---")
             st.subheader("🎯 Profit Target Calculator")
             col_calc1, col_calc2 = st.columns([1, 2])
@@ -367,9 +366,7 @@ if ticker:
 
         with tab11:
             st.header("🔮 Future P&L Simulator")
-            st.write("Scroll UP on the chart to zoom in. Check for gaps between lines!")
             fig_sim = plot_simulation_interactive(current_price, strike_price, days_left, contract_iv, purchase_price=theo_price)
-            # ENABLED SCROLL ZOOM AND PAN
             st.plotly_chart(fig_sim, use_container_width=True, config={'scrollZoom': True})
             st.info("💡 **Hover** over any line to see the exact value. **Scroll** to zoom in. **Click & Drag** to move.")
 
@@ -384,8 +381,27 @@ if ticker:
             st.markdown("---")
             st.subheader("⚔️ Interactive Battle Map")
             fig_flow = plot_flow_battle_interactive(calls, puts, strike_price)
-            # ENABLED SCROLL ZOOM AND PAN
             st.plotly_chart(fig_flow, use_container_width=True, config={'scrollZoom': True})
+
+        # --- TAB 13: ATM SCANNER (NEW!) ---
+        with tab13:
+            st.header("🔍 ATM Options Scanner")
+            st.markdown("Upload your **Excel (.xlsx)** file. The first column must contain Ticker Symbols (e.g., AAPL, TSLA).")
+            
+            uploaded_list = st.file_uploader("Upload Momentum List", type=['xlsx'])
+            
+            if uploaded_list:
+                df_input = pd.read_excel(uploaded_list)
+                # Assume tickers are in the first column, convert to list
+                tickers = df_input.iloc[:, 0].dropna().astype(str).tolist()
+                
+                st.write(f"✅ Found **{len(tickers)}** tickers. Ready to scan.")
+                
+                if st.button("🚀 Start ATM Scan"):
+                    result_df = scan_atm_options(tickers)
+                    st.success("Scan Complete!")
+                    st.dataframe(result_df, use_container_width=True)
+                    st.info("💡 **IV High?** Careful. **Volume Low?** Trap.")
 
     except Exception as e:
         if "Too Many Requests" in str(e):
