@@ -4,8 +4,10 @@ import pandas as pd
 import numpy as np
 from scipy.stats import norm
 import plotly.graph_objects as go
+import matplotlib.pyplot as plt # CRITICAL FOR REPORT
 from datetime import datetime, timedelta
 import time
+import random
 import google.generativeai as genai
 from PIL import Image
 from io import BytesIO
@@ -36,24 +38,16 @@ def check_password():
 if not check_password():
     st.stop()
 
-# --- CSS STYLING ---
-st.markdown("""
-<style>
-    .metric-card { background-color: #0e1117; border: 1px solid #262730; padding: 20px; border-radius: 10px; color: white; }
-    .profit-box { background-color: #1E3D59; padding: 20px; border-radius: 10px; border-left: 5px solid #00FF7F; margin-bottom: 20px; color: white; }
-    .theta-box { background-color: #330000; padding: 20px; border-radius: 10px; border-left: 5px solid #FF4B4B; color: white; }
-    .stButton>button { width: 100%; }
-</style>
-""", unsafe_allow_html=True)
-
-# --- HELPER FUNCTIONS ---
-def fetch_with_retry(func, *args, retries=3):
+# --- HELPER FUNCTIONS (Anti-Block) ---
+def fetch_with_retry(func, *args, retries=5):
     for i in range(retries):
         try:
             return func(*args)
         except Exception as e:
-            if "Too Many Requests" in str(e) or "404" in str(e):
-                time.sleep((i + 1) * 2)
+            error_msg = str(e).lower()
+            if "too many requests" in error_msg or "429" in error_msg:
+                wait_time = (2 ** i) + random.uniform(0, 1) 
+                time.sleep(wait_time)
                 continue
             raise e
     return func(*args)
@@ -62,7 +56,7 @@ def fetch_with_retry(func, *args, retries=3):
 def get_stock_history_and_info(ticker_symbol):
     def _get():
         stock = yf.Ticker(ticker_symbol)
-        history = stock.history(period="1mo") # Grab 1 month for charts
+        history = stock.history(period="1mo")
         info = stock.info
         return history, info
     return fetch_with_retry(_get)
@@ -121,69 +115,50 @@ def calculate_max_pain(options_chain):
     if df_pain.empty: return 0
     return df_pain.loc[df_pain['total_loss'].idxmin()]['strike']
 
-# --- FIGURE GENERATORS (Separated for Reporting) ---
-def create_greeks_fig(current_price, strike, days_left, iv, risk_free=0.045):
-    prices = np.linspace(strike * 0.8, strike * 1.2, 100)
-    T = max(days_left / 365.0, 0.001)
-    deltas = [calculate_greeks(p, strike, T, risk_free, iv)[0] for p in prices]
-    gammas = [calculate_greeks(p, strike, T, risk_free, iv)[1] for p in prices]
-    curr_d, _, _ = calculate_greeks(current_price, strike, T, risk_free, iv)
+# --- REPORT GENERATOR (THE BULLETPROOF VERSION) ---
+def generate_safe_report_plots(ticker, price, strike, days_left, iv, calls, puts):
+    # This function creates Matplotlib charts (Server Safe) instead of Plotly
+    plots = {}
     
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=prices, y=deltas, mode='lines', name='Delta', line=dict(color='#4DA6FF', width=3)))
-    fig.add_trace(go.Scatter(x=prices, y=gammas, mode='lines', name='Gamma', line=dict(color='#00FF7F', width=2, dash='dash'), yaxis="y2"))
-    fig.add_trace(go.Scatter(x=[current_price], y=[curr_d], mode='markers', name='You', marker=dict(color='white', size=10)))
-    fig.update_layout(title="Greeks Curve", template="plotly_dark", height=400, yaxis2=dict(overlaying="y", side="right"))
-    return fig
-
-def create_sim_fig(S, K, days_left, iv, r=0.045, purchase_price=0):
-    prices = np.linspace(S * 0.8, S * 1.2, 100)
-    T1 = max(days_left / 365.0, 0.0001)
-    pnl_today = [black_scholes_price(p, K, T1, r, iv) - purchase_price for p in prices]
-    T2 = max((days_left / 2) / 365.0, 0.0001)
-    pnl_half = [black_scholes_price(p, K, T2, r, iv) - purchase_price for p in prices]
-    T3 = 0.0001
-    pnl_exp = [black_scholes_price(p, K, T3, r, iv) - purchase_price for p in prices]
-    
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=prices, y=pnl_today, mode='lines', name='Today', line=dict(color='#4DA6FF', width=3)))
-    fig.add_trace(go.Scatter(x=prices, y=pnl_half, mode='lines', name='Halfway', line=dict(color='#FFD700', width=2, dash='dash')))
-    fig.add_trace(go.Scatter(x=prices, y=pnl_exp, mode='lines', name='Expiration', line=dict(color='#FF4B4B', width=2, dash='dot')))
-    fig.add_hline(y=0, line_color="white", opacity=0.5)
-    fig.update_layout(title="Future P&L Simulator", template="plotly_dark", height=400)
-    return fig
-
-def create_whale_fig(calls_df, current_strike):
-    strikes = sorted(calls_df['strike'].unique())
-    try: idx = strikes.index(current_strike)
+    # 1. Whale Chart
+    strikes = sorted(calls['strike'].unique())
+    try: idx = strikes.index(strike)
     except: idx = 0
-    start_idx = max(0, idx - 3); end_idx = min(len(strikes), idx + 4)
-    subset = calls_df[calls_df['strike'].isin(strikes[start_idx:end_idx])].copy()
+    start = max(0, idx - 3); end = min(len(strikes), idx + 4)
+    subset = calls[calls['strike'].isin(strikes[start:end])]
     
-    fig = go.Figure()
-    fig.add_trace(go.Bar(x=subset['strike'], y=subset['openInterest'], name='OI (Old)', marker_color='#4DA6FF'))
-    fig.add_trace(go.Bar(x=subset['strike'], y=subset['volume'], name='Vol (New)', marker_color='#00FF7F'))
-    fig.update_layout(title="Whale Detector", template="plotly_dark", height=400, barmode='group')
-    return fig
+    fig1, ax1 = plt.subplots(figsize=(6, 3))
+    x = np.arange(len(subset))
+    width = 0.35
+    ax1.bar(x - width/2, subset['openInterest'], width, label='Open Int', color='#4DA6FF')
+    ax1.bar(x + width/2, subset['volume'], width, label='Volume', color='#00FF7F')
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(subset['strike'].astype(int))
+    ax1.set_title(f"Whale Activity: {ticker}")
+    ax1.legend()
+    buf1 = BytesIO(); fig1.savefig(buf1, format="png"); buf1.seek(0)
+    plots['whale'] = buf1
+    plt.close(fig1)
 
-def create_battle_fig(calls, puts, current_strike):
-    c_vol = calls[['strike', 'volume']].groupby('strike').sum()
-    p_vol = puts[['strike', 'volume']].groupby('strike').sum()
-    df = pd.merge(c_vol, p_vol, on='strike', how='outer').fillna(0)
-    strikes = sorted(df.index)
-    try: idx = strikes.index(current_strike)
-    except: idx = (np.abs(np.array(strikes) - current_strike)).argmin()
-    start_idx = max(0, idx - 4); end_idx = min(len(strikes), idx + 5)
-    subset = df.iloc[start_idx:end_idx]
+    # 2. Simulator Chart
+    prices = np.linspace(strike * 0.8, strike * 1.2, 50)
+    T1 = max(days_left / 365.0, 0.001)
+    theo = black_scholes_price(price, strike, T1, 0.045, iv)
+    pnl = [black_scholes_price(p, strike, T1, 0.045, iv) - theo for p in prices]
     
-    fig = go.Figure()
-    fig.add_trace(go.Bar(x=subset.index, y=subset['volume_x'], name='Bulls', marker_color='#00FF7F'))
-    fig.add_trace(go.Bar(x=subset.index, y=subset['volume_y'], name='Bears', marker_color='#FF4B4B'))
-    fig.update_layout(title="Battle Map", template="plotly_dark", height=400, barmode='group')
-    return fig
+    fig2, ax2 = plt.subplots(figsize=(6, 3))
+    ax2.plot(prices, pnl, color='#4DA6FF', linewidth=2)
+    ax2.axhline(0, color='gray', linestyle='--')
+    ax2.axvline(price, color='red', linestyle=':', label='Current Price')
+    ax2.set_title("P&L Simulator (Today)")
+    ax2.grid(True, alpha=0.3)
+    buf2 = BytesIO(); fig2.savefig(buf2, format="png"); buf2.seek(0)
+    plots['sim'] = buf2
+    plt.close(fig2)
 
-# --- WORD REPORT GENERATOR (FULL DOSSIER) ---
-def generate_full_report(ticker, price, strike, exp, d, g, t, ai_text, fig_whale, fig_sim, fig_battle):
+    return plots
+
+def generate_full_report(ticker, price, strike, exp, d, g, t, ai_text, plots, scan_df=None):
     doc = Document()
     doc.add_heading(f'CONFIDENTIAL TRADING DOSSIER: {ticker}', 0)
     doc.add_paragraph(f"Report Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
@@ -198,46 +173,53 @@ def generate_full_report(ticker, price, strike, exp, d, g, t, ai_text, fig_whale
     
     # 2. Risk Profile
     doc.add_heading('2. Risk Profile (The Greeks)', level=1)
-    doc.add_paragraph(f"Delta ({d:.2f}): Directional exposure per share.")
-    doc.add_paragraph(f"Theta ({t:.3f}): Time decay per day (approx ${abs(t)*100:.2f}).")
+    doc.add_paragraph(f"Delta ({d:.2f}): Directional exposure.")
+    doc.add_paragraph(f"Theta ({t:.3f}): Time decay per day.")
     doc.add_paragraph(f"Gamma ({g:.3f}): Acceleration factor.")
     
     # 3. AI Analysis
     doc.add_heading('3. AI Strategic Analysis', level=1)
     doc.add_paragraph(ai_text if ai_text else "No AI analysis was run for this session.")
     
-    # 4. Charts (Images)
+    # 4. Intelligence Visuals (Safe Images)
     doc.add_heading('4. Intelligence Visuals', level=1)
-    
-    try:
-        # Whale Detector
-        doc.add_heading('Whale Activity (Volume vs OI)', level=2)
-        img_bytes = fig_whale.to_image(format="png", width=600, height=300)
-        doc.add_picture(BytesIO(img_bytes), width=Inches(6))
-        
-        # Simulator
-        doc.add_heading('Future P&L Simulator', level=2)
-        img_bytes_sim = fig_sim.to_image(format="png", width=600, height=300)
-        doc.add_picture(BytesIO(img_bytes_sim), width=Inches(6))
-        
-        # Battle Map
-        doc.add_heading('Bull vs Bear Battle Map', level=2)
-        img_bytes_bat = fig_battle.to_image(format="png", width=600, height=300)
-        doc.add_picture(BytesIO(img_bytes_bat), width=Inches(6))
-        
-    except Exception as e:
-        doc.add_paragraph(f"[Error generating chart images: {e}. Please ensure 'kaleido' is installed in requirements.txt]")
+    doc.add_paragraph("Whale Activity Detector:")
+    doc.add_picture(plots['whale'], width=Inches(5.5))
+    doc.add_paragraph("P&L Simulation Curve:")
+    doc.add_picture(plots['sim'], width=Inches(5.5))
 
-    # Save
+    # 5. ATM Scanner Results (NEW!)
+    if scan_df is not None and not scan_df.empty:
+        doc.add_heading('5. ATM Scanner Results', level=1)
+        doc.add_paragraph("Top ATM Candidates found in your Scan:")
+        
+        # Create Table with Header
+        t = doc.add_table(rows=1, cols=5)
+        t.style = 'Table Grid'
+        hdr_cells = t.rows[0].cells
+        headers = ['Ticker', 'Price', 'Strike', 'Last', 'Vol']
+        for i, h in enumerate(headers): hdr_cells[i].text = h
+        
+        # Fill Rows (Limit to top 20 to save space)
+        for index, row in scan_df.head(20).iterrows():
+            row_cells = t.add_row().cells
+            row_cells[0].text = str(row['Ticker'])
+            row_cells[1].text = str(row['Price']) if 'Price' in row else str(row['Stock Price'])
+            row_cells[2].text = str(row['Strike']) if 'Strike' in row else str(row['ATM Strike'])
+            row_cells[3].text = str(row['Last']) if 'Last' in row else str(row['Option Price'])
+            row_cells[4].text = str(row['Vol']) if 'Vol' in row else str(row['Volume'])
+
     bio = BytesIO()
     doc.save(bio)
     return bio
 
+# --- SCANNER ---
 def scan_atm_options(tickers):
     results = []
     progress = st.progress(0)
     status = st.empty()
     for i, t in enumerate(tickers):
+        time.sleep(random.uniform(1.0, 2.0)) # Anti-Block Pause
         try:
             status.text(f"Scanning {t}...")
             stock = yf.Ticker(t)
@@ -248,13 +230,48 @@ def scan_atm_options(tickers):
             chain['diff'] = abs(chain['strike'] - curr)
             atm = chain.loc[chain['diff'].idxmin()]
             results.append({
-                "Ticker": t, "Price": curr, "Strike": atm['strike'], "Exp": dates[0],
+                "Ticker": t, "Price": round(curr, 2), "Strike": atm['strike'], "Exp": dates[0],
                 "Last": atm['lastPrice'], "Vol": atm['volume'], "OI": atm['openInterest']
             })
         except: pass
         progress.progress((i+1)/len(tickers))
     status.empty(); progress.empty()
     return pd.DataFrame(results)
+
+# --- PLOTLY HELPERS (Interactive for UI) ---
+def create_plotly_figs(calls, puts, strike):
+    # Whale
+    strikes = sorted(calls['strike'].unique())
+    try: idx = strikes.index(strike)
+    except: idx = 0
+    start = max(0, idx - 3); end = min(len(strikes), idx + 4)
+    sub = calls[calls['strike'].isin(strikes[start:end])]
+    fig_whale = go.Figure()
+    fig_whale.add_trace(go.Bar(x=sub['strike'], y=sub['openInterest'], name='OI', marker_color='#4DA6FF'))
+    fig_whale.add_trace(go.Bar(x=sub['strike'], y=sub['volume'], name='Vol', marker_color='#00FF7F'))
+    fig_whale.update_layout(title="Whale Detector", template="plotly_dark", height=400)
+    
+    # Battle
+    c_vol = calls[['strike', 'volume']].groupby('strike').sum()
+    p_vol = puts[['strike', 'volume']].groupby('strike').sum()
+    df = pd.merge(c_vol, p_vol, on='strike', how='outer').fillna(0)
+    sub_b = df.iloc[max(0, len(df)//2 - 4): min(len(df), len(df)//2 + 5)]
+    fig_battle = go.Figure()
+    fig_battle.add_trace(go.Bar(x=sub_b.index, y=sub_b['volume_x'], name='Bulls', marker_color='#00FF7F'))
+    fig_battle.add_trace(go.Bar(x=sub_b.index, y=sub_b['volume_y'], name='Bears', marker_color='#FF4B4B'))
+    fig_battle.update_layout(title="Battle Map", template="plotly_dark", height=400)
+    
+    return fig_whale, fig_battle
+
+def create_sim_plot(S, K, days, iv, theo):
+    prices = np.linspace(S*0.8, S*1.2, 100)
+    T = max(days/365, 0.001)
+    pnl = [black_scholes_price(p, K, T, 0.045, iv) - theo for p in prices]
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=prices, y=pnl, mode='lines', name='Today', line=dict(color='#4DA6FF')))
+    fig.add_hline(y=0, line_color="white", opacity=0.5)
+    fig.update_layout(title="Simulator", template="plotly_dark", height=400)
+    return fig
 
 # --- MAIN APP ---
 st.sidebar.markdown("## ⚙️ Settings")
@@ -263,7 +280,6 @@ strike_price = st.sidebar.number_input("Strike Price ($)", value=148.0)
 
 if st.sidebar.button("🔄 Force Refresh Data"):
     st.cache_data.clear()
-    st.session_state["ai_result"] = "" 
     st.rerun()
 
 if ticker:
@@ -285,12 +301,6 @@ if ticker:
             theo_price = black_scholes_price(current_price, strike_price, days_left/365, 0.045, contract_iv)
             d, g, t = calculate_greeks(current_price, strike_price, days_left/365, 0.045, contract_iv)
 
-        # --- PRE-GENERATE FIGURES FOR REPORT ---
-        fig_whale = create_whale_fig(calls, strike_price)
-        fig_greeks = create_greeks_fig(current_price, strike_price, days_left, contract_iv)
-        fig_sim = create_sim_fig(current_price, strike_price, days_left, contract_iv, 0.045, theo_price)
-        fig_flow = create_battle_fig(calls, puts, strike_price)
-
         st.title(f"📊 {ticker} Command Center 🔒")
 
         # --- TABS ---
@@ -301,83 +311,64 @@ if ticker:
             "13. 🔍 ATM Scanner"
         ])
 
+        fig_whale, fig_battle = create_plotly_figs(calls, puts, strike_price)
+        fig_sim = create_sim_plot(current_price, strike_price, days_left, contract_iv, theo_price)
+
         with tabs[0]: st.line_chart(history['Close'])
         with tabs[1]: st.metric("Volume", f"{info.get('volume', 0):,}")
-        with tabs[2]: st.metric("Implied Volatility", f"{contract_iv * 100:.2f}%")
-        with tabs[3]: st.metric("Expected Daily Move", f"${(contract_iv * 100 / 16) / 100 * current_price:.2f}")
-        with tabs[4]: st.header("Whale Detector"); st.plotly_chart(fig_whale, use_container_width=True)
+        with tabs[2]: st.metric("IV", f"{contract_iv * 100:.2f}%")
+        with tabs[3]: st.metric("Exp Move", f"${(contract_iv * 100 / 16) / 100 * current_price:.2f}")
+        with tabs[4]: st.plotly_chart(fig_whale, use_container_width=True)
         with tabs[5]: 
-            st.header("Risk & Profit Hub")
             c1, c2, c3 = st.columns(3)
             c1.metric("Delta", f"{d:.2f}"); c2.metric("Gamma", f"{g:.3f}"); c3.metric("Theta", f"{t:.3f}")
-            st.plotly_chart(fig_greeks, use_container_width=True)
         with tabs[6]: st.metric("Max Pain", f"${calculate_max_pain(full_chain):.2f}")
-        with tabs[7]:
-            try: 
-                for item in stock_conn.news[:3]: st.markdown(f"- [{item['title']}]({item['link']})")
-            except: st.write("No news found.")
-
-        # --- TAB 9: AI (PERSISTENT) ---
+        
         with tabs[8]:
             st.header("🤖 AI Chart Analyst")
             if "ai_result" not in st.session_state: st.session_state["ai_result"] = ""
-            
-            uploaded_files = st.file_uploader("Upload Charts", type=["jpg", "png"], accept_multiple_files=True)
-            if uploaded_files and st.button("Analyze Images"):
+            up_files = st.file_uploader("Upload Charts", type=["jpg", "png"], accept_multiple_files=True)
+            if up_files and st.button("Analyze Images"):
                 if "api_keys" in st.secrets:
                     genai.configure(api_key=st.secrets["api_keys"]["gemini"])
                     try:
                         model = genai.GenerativeModel("models/gemini-2.0-flash-exp")
-                        prompt = "You are a Senior Trader. Analyze these charts for 'Walls', 'Squeezes', and 'Traps'."
-                        content = [prompt] + [Image.open(f) for f in uploaded_files]
+                        prompt = "Analyze these charts for walls and traps."
+                        content = [prompt] + [Image.open(f) for f in up_files]
                         with st.spinner("Analyzing..."):
-                            resp = model.generate_content(content)
-                            st.session_state["ai_result"] = resp.text
+                            st.session_state["ai_result"] = model.generate_content(content).text
                             st.rerun()
                     except Exception as e: st.error(str(e))
-            
-            if st.session_state["ai_result"]:
-                st.markdown("### 📝 Analysis Report"); st.write(st.session_state["ai_result"])
+            if st.session_state["ai_result"]: st.write(st.session_state["ai_result"])
 
-        with tabs[9]: st.header("💬 Strategy Engine"); st.info("Chat functionality ready.")
-        with tabs[10]: st.header("🔮 Simulator"); st.plotly_chart(fig_sim, use_container_width=True)
-        with tabs[11]: st.header("🌊 Market Flow"); st.plotly_chart(fig_flow, use_container_width=True)
+        with tabs[10]: st.plotly_chart(fig_sim, use_container_width=True)
+        with tabs[11]: st.plotly_chart(fig_battle, use_container_width=True)
         
-        # --- TAB 13: EXCEL SCANNER ---
+        # --- TAB 13: SCANNER ---
         with tabs[12]:
-            st.header("🔍 ATM Options Scanner")
-            up_file = st.file_uploader("Upload Excel List", type=['xlsx'])
-            if up_file and st.button("🚀 Scan List"):
-                df = pd.read_excel(up_file)
-                tickers = df.iloc[:,0].astype(str).tolist()
-                res = scan_atm_options(tickers)
-                st.session_state["scan_res"] = res
+            st.header("🔍 ATM Scanner")
+            up_list = st.file_uploader("Upload Excel", type=['xlsx'])
+            if up_list and st.button("🚀 Scan"):
+                df = pd.read_excel(up_list)
+                st.session_state["scan_res"] = scan_atm_options(df.iloc[:,0].astype(str).tolist())
             
             if "scan_res" in st.session_state:
-                st.dataframe(st.session_state["scan_res"], use_container_width=True)
-                # EXCEL DOWNLOAD
-                buff = BytesIO()
-                with pd.ExcelWriter(buff, engine='xlsxwriter') as writer:
-                    st.session_state["scan_res"].to_excel(writer, index=False)
-                st.download_button("📥 Download Excel", buff.getvalue(), "ATM_Scan.xlsx", "application/vnd.ms-excel")
+                st.dataframe(st.session_state["scan_res"])
 
-        # --- MAIN REPORT DOWNLOAD BUTTON (SIDEBAR) ---
+        # --- REPORT EXPORT ---
         st.sidebar.markdown("---")
-        st.sidebar.markdown("### 📄 Export")
+        # Generate SAFE plots for Word
+        safe_plots = generate_safe_report_plots(ticker, current_price, strike_price, days_left, contract_iv, calls, puts)
+        # Pass Scan Results if they exist
+        scan_results = st.session_state.get("scan_res", None)
         
-        # Generate the report binary
         report_file = generate_full_report(
             ticker, current_price, strike_price, selected_date, d, g, t, 
             st.session_state.get("ai_result", ""), 
-            fig_whale, fig_sim, fig_flow
+            safe_plots, scan_results
         )
         
-        st.sidebar.download_button(
-            label="Download Full Dossier (Word)",
-            data=report_file.getvalue(),
-            file_name=f"{ticker}_Full_Report.docx",
-            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        )
+        st.sidebar.download_button("📄 Download Full Dossier", report_file.getvalue(), f"{ticker}_Dossier.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 
     except Exception as e:
         st.error(f"Waiting for data... ({e})")
