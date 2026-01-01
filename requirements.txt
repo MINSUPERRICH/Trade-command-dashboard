@@ -6,3 +6,6 @@ scipy
 matplotlib
 google-generativeai
 plotly
+xlsxwriter
+python-docx
+kaleido
