@@ -7,5 +7,5 @@ plotly
 google-generativeai
 xlsxwriter
 python-docx
-kaleido
+matplotlib
 openpyxl
