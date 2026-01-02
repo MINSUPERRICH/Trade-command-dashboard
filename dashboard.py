@@ -67,11 +67,8 @@ def get_stock_history_and_info(ticker_symbol):
         stock = yf.Ticker(ticker_symbol)
         history = stock.history(period="1mo")
         info = stock.info
-        # SAFE NEWS FETCHING
-        try:
-            news = stock.news
-        except:
-            news = []
+        try: news = stock.news
+        except: news = []
         return history, info, news
     return fetch_with_retry(_get)
 
@@ -230,6 +227,23 @@ def create_all_static_plots(ticker, S, K, days, iv, calls, puts):
     ax3.set_title("Flow Monitor (Battle Map)"); ax3.legend()
     b3 = BytesIO(); fig3.savefig(b3, format='png'); b3.seek(0); plots['flow'] = b3
     plt.close(fig3)
+
+    # 4. Greeks Profile (NEW)
+    prices_g = np.linspace(K*0.8, K*1.2, 50)
+    T_g = max(days/365, 0.001)
+    deltas = [calculate_greeks(p, K, T_g, 0.045, iv)[0] for p in prices_g]
+    gammas = [calculate_greeks(p, K, T_g, 0.045, iv)[1] for p in prices_g]
+    fig4, ax4 = plt.subplots(figsize=(7,3.5))
+    ax4.plot(prices_g, deltas, color='#4DA6FF', linewidth=2, label='Delta')
+    ax4_right = ax4.twinx()
+    ax4_right.plot(prices_g, gammas, color='#00FF7F', linestyle='--', linewidth=2, label='Gamma')
+    ax4.set_title("Risk Profile (Delta vs Gamma)")
+    ax4.set_ylabel("Delta"); ax4_right.set_ylabel("Gamma")
+    lines, labels = ax4.get_legend_handles_labels()
+    lines2, labels2 = ax4_right.get_legend_handles_labels()
+    ax4.legend(lines + lines2, labels + labels2, loc=0)
+    b4 = BytesIO(); fig4.savefig(b4, format='png'); b4.seek(0); plots['greeks'] = b4
+    plt.close(fig4)
     
     return plots
 
@@ -237,66 +251,56 @@ def create_all_static_plots(ticker, S, K, days, iv, calls, puts):
 def generate_full_dossier(data):
     doc = Document()
     
-    # Header
     head = doc.add_heading(f"MISSION REPORT: {data['ticker']}", 0)
     head.alignment = WD_ALIGN_PARAGRAPH.CENTER
     doc.add_paragraph(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
     
-    # 1. Executive Summary Table
     doc.add_heading("1. Executive Summary", 1)
     t = doc.add_table(rows=2, cols=4); t.style = 'Table Grid'
     r = t.rows[1].cells
     r[0].text = data['ticker']; r[1].text = f"${data['price']:.2f}"
     r[2].text = f"${data['strike']}"; r[3].text = str(data['exp'])
     
-    # 2. Key Metrics (Tabs 1-4, 7)
     doc.add_heading("2. Key Intel Metrics", 1)
     p = doc.add_paragraph()
-    p.add_run(f"• Implied Volatility (IV): ").bold = True; p.add_run(f"{data['iv']*100:.2f}%\n")
-    p.add_run(f"• Rule of 16 (Daily Move): ").bold = True; p.add_run(f"${data['daily_move']:.2f}\n")
-    p.add_run(f"• Max Pain Price: ").bold = True; p.add_run(f"${data['max_pain']:.2f}\n")
+    p.add_run(f"• IV: ").bold = True; p.add_run(f"{data['iv']*100:.2f}%\n")
+    p.add_run(f"• Rule of 16: ").bold = True; p.add_run(f"${data['daily_move']:.2f}\n")
+    p.add_run(f"• Max Pain: ").bold = True; p.add_run(f"${data['max_pain']:.2f}\n")
     p.add_run(f"• Volume: ").bold = True; p.add_run(f"{data['volume']:,}")
 
-    # 3. Risk & Profit (Tab 6)
     doc.add_heading("3. Risk & Strategy Profile", 1)
-    doc.add_paragraph(f"• Delta (Speed): {data['delta']:.2f}")
-    doc.add_paragraph(f"• Theta (Decay): {data['theta']:.3f}")
-    doc.add_paragraph(f"• Gamma (Accel): {data['gamma']:.3f}")
-    doc.add_paragraph("--- Projections ---").bold = True
-    doc.add_paragraph(f"• Profit Target: To make ${data['profit_goal']}, stock must hit ${data['profit_price']:.2f}.")
-    doc.add_paragraph(f"• Holiday Risk: {data['holidays']} days closed = ${data['decay_loss']:.2f} loss.")
+    doc.add_paragraph(f"• Delta: {data['delta']:.2f}")
+    doc.add_paragraph(f"• Theta: {data['theta']:.3f}")
+    doc.add_paragraph(f"• Gamma: {data['gamma']:.3f}")
+    doc.add_paragraph("Risk Profile Chart (Delta/Gamma):").bold = True
+    doc.add_picture(data['plots']['greeks'], width=Inches(6))
     
-    # 4. Visual Intelligence (Tabs 5, 11, 12)
+    doc.add_paragraph("--- Strategy ---").bold = True
+    doc.add_paragraph(f"• Profit Target: To make ${data['profit_goal']}, target ${data['profit_price']:.2f}.")
+    doc.add_paragraph(f"• Holiday Risk: {data['holidays']} days = ${data['decay_loss']:.2f} loss.")
+    
     doc.add_heading("4. Visual Intelligence", 1)
-    doc.add_paragraph("Whale Activity (Smart Money):")
+    doc.add_paragraph("Whale Activity:")
     doc.add_picture(data['plots']['whale'], width=Inches(6))
-    doc.add_paragraph("Flow Monitor (Bull/Bear Battle):")
+    doc.add_paragraph("Flow Monitor:")
     doc.add_picture(data['plots']['flow'], width=Inches(6))
     doc.add_paragraph("Future P&L Simulator:")
     doc.add_picture(data['plots']['sim'], width=Inches(6))
 
-    # 5. Analysis & Strategy (Tabs 9, 10)
     doc.add_heading("5. Strategic Analysis", 1)
     doc.add_heading("AI Chart Analyst:", 3)
     doc.add_paragraph(data['ai_text'] if data['ai_text'] else "No chart analysis run.")
     doc.add_heading("Strategy Engine Log:", 3)
     doc.add_paragraph(data['strat_log'] if data['strat_log'] else "No strategy query run.")
 
-    # 6. News (Tab 8)
     doc.add_heading("6. Recent Intel (News)", 1)
     if data['news']:
         try:
-            for n in data['news'][:3]:
-                # SAFE ACCESS TO NEWS KEYS
-                title = n.get('title', 'No Title')
-                pub = n.get('publisher', 'Unknown')
-                doc.add_paragraph(f"• {title} ({pub})")
-        except:
-            doc.add_paragraph("News data unavailable.")
-    else:
-        doc.add_paragraph("No news found.")
+            for n in data['news'][:3]: 
+                doc.add_paragraph(f"• {n.get('title', 'N/A')} ({n.get('publisher', 'N/A')})")
+        except: doc.add_paragraph("News unavailable.")
+    else: doc.add_paragraph("No news found.")
 
-    # 7. Scanner Results (Tab 13)
     if data['scan'] is not None and not data['scan'].empty:
         doc.add_heading("7. ATM Scan Results (Top 10)", 1)
         st_t = doc.add_table(rows=1, cols=4); st_t.style = 'Table Grid'
