@@ -228,7 +228,7 @@ def create_all_static_plots(ticker, S, K, days, iv, calls, puts):
     b3 = BytesIO(); fig3.savefig(b3, format='png'); b3.seek(0); plots['flow'] = b3
     plt.close(fig3)
 
-    # 4. Greeks Profile (NEW)
+    # 4. Greeks Profile
     prices_g = np.linspace(K*0.8, K*1.2, 50)
     T_g = max(days/365, 0.001)
     deltas = [calculate_greeks(p, K, T_g, 0.045, iv)[0] for p in prices_g]
@@ -302,10 +302,11 @@ def generate_full_dossier(data):
     else: doc.add_paragraph("No news found.")
 
     if data['scan'] is not None and not data['scan'].empty:
-        doc.add_heading("7. ATM Scan Results (Top 10)", 1)
+        doc.add_heading("7. ATM Scan Results (Full List)", 1)
         st_t = doc.add_table(rows=1, cols=4); st_t.style = 'Table Grid'
         h = st_t.rows[0].cells; h[0].text='Ticker'; h[1].text='Strike'; h[2].text='Price'; h[3].text='Vol'
-        for _, r in data['scan'].head(10).iterrows():
+        # UNLIMITED ROWS
+        for _, r in data['scan'].iterrows():
             row = st_t.add_row().cells
             row[0].text=str(r['Ticker']); row[1].text=str(r['ATM Strike'])
             row[2].text=str(r['Option Price']); row[3].text=str(r['Volume'])
