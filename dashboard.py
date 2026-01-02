@@ -49,17 +49,14 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- HELPER FUNCTIONS (SAFETY MODE ENABLED) ---
+# --- HELPER FUNCTIONS ---
 def fetch_with_retry(func, *args, retries=3):
     for i in range(retries):
         try:
             return func(*args)
         except Exception as e:
-            error_msg = str(e).lower()
-            if "too many requests" in error_msg or "429" in error_msg:
-                # EXPONENTIAL BACKOFF: Wait 5s, then 10s, then 20s...
-                wait_time = (5 * (i + 1)) + random.uniform(1, 3)
-                time.sleep(wait_time)
+            if "too many requests" in str(e).lower():
+                time.sleep(random.uniform(1, 3))
                 continue
             raise e
     return func(*args)
@@ -187,6 +184,8 @@ def plot_flow_battle_interactive(calls, puts, current_strike):
 # --- STATIC PLOTS (WORD REPORT) ---
 def create_all_static_plots(ticker, S, K, days, iv, calls, puts):
     plots = {}
+    
+    # 1. Whale Detector
     strikes = sorted(calls['strike'].unique())
     try: idx = strikes.index(K)
     except: idx = 0
@@ -200,6 +199,7 @@ def create_all_static_plots(ticker, S, K, days, iv, calls, puts):
     b1 = BytesIO(); fig1.savefig(b1, format='png'); b1.seek(0); plots['whale'] = b1
     plt.close(fig1)
 
+    # 2. Simulator
     prices = np.linspace(K*0.8, K*1.2, 50)
     T = max(days/365, 0.001)
     base = black_scholes_price(S, K, T, 0.045, iv)
@@ -212,6 +212,7 @@ def create_all_static_plots(ticker, S, K, days, iv, calls, puts):
     b2 = BytesIO(); fig2.savefig(b2, format='png'); b2.seek(0); plots['sim'] = b2
     plt.close(fig2)
 
+    # 3. Flow Monitor (Battle Map)
     c_vol = calls[['strike', 'volume']].groupby('strike').sum()
     p_vol = puts[['strike', 'volume']].groupby('strike').sum()
     df = pd.merge(c_vol, p_vol, on='strike', how='outer').fillna(0).sort_index()
@@ -227,6 +228,7 @@ def create_all_static_plots(ticker, S, K, days, iv, calls, puts):
     b3 = BytesIO(); fig3.savefig(b3, format='png'); b3.seek(0); plots['flow'] = b3
     plt.close(fig3)
 
+    # 4. Greeks Profile
     prices_g = np.linspace(K*0.8, K*1.2, 50)
     T_g = max(days/365, 0.001)
     deltas = [calculate_greeks(p, K, T_g, 0.045, iv)[0] for p in prices_g]
@@ -245,6 +247,7 @@ def create_all_static_plots(ticker, S, K, days, iv, calls, puts):
     
     return plots
 
+# --- REPORT HELPER: COLORED BOX ---
 def add_colored_box(doc, text, color_hex):
     table = doc.add_table(rows=1, cols=1)
     cell = table.cell(0, 0)
@@ -252,8 +255,10 @@ def add_colored_box(doc, text, color_hex):
     shading_elm = parse_xml(r'<w:shd {} w:fill="{}"/>'.format(nsdecls('w'), color_hex))
     cell._tc.get_or_add_tcPr().append(shading_elm)
 
+# --- MASTER REPORT GENERATOR ---
 def generate_full_dossier(data):
     doc = Document()
+    
     head = doc.add_heading(f"MISSION REPORT: {data['ticker']}", 0)
     head.alignment = WD_ALIGN_PARAGRAPH.CENTER
     doc.add_paragraph(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
@@ -275,22 +280,31 @@ def generate_full_dossier(data):
     doc.add_paragraph(f"• Delta: {data['delta']:.2f}")
     doc.add_paragraph(f"• Theta: {data['theta']:.3f}")
     doc.add_paragraph(f"• Gamma: {data['gamma']:.3f}")
+    doc.add_paragraph("Risk Profile Chart (Delta/Gamma):").bold = True
     doc.add_picture(data['plots']['greeks'], width=Inches(6))
     
     doc.add_paragraph("--- Strategy Calculators ---").bold = True
+    
     profit_text = f"PROFIT TARGET:\nTo make ${data['profit_goal']}, Stock needs to hit ${data['profit_price']:.2f}."
-    add_colored_box(doc, profit_text, "1E3D59")
+    add_colored_box(doc, profit_text, "1E3D59") # Dark Blue
+    
     doc.add_paragraph("")
+    
     loss_text = f"HOLIDAY DECAY RISK:\n{data['holidays']} days closed = Estimated ${data['decay_loss']:.2f} loss."
-    add_colored_box(doc, loss_text, "FF4B4B")
+    add_colored_box(doc, loss_text, "FF4B4B") # Red
     
     doc.add_heading("4. Visual Intelligence", 1)
+    doc.add_paragraph("Whale Activity:")
     doc.add_picture(data['plots']['whale'], width=Inches(6))
+    doc.add_paragraph("Flow Monitor:")
     doc.add_picture(data['plots']['flow'], width=Inches(6))
+    doc.add_paragraph("Future P&L Simulator:")
     doc.add_picture(data['plots']['sim'], width=Inches(6))
 
     doc.add_heading("5. Strategic Analysis", 1)
+    doc.add_heading("AI Chart Analyst:", 3)
     doc.add_paragraph(data['ai_text'] if data['ai_text'] else "No chart analysis run.")
+    doc.add_heading("Strategy Engine Log:", 3)
     doc.add_paragraph(data['strat_log'] if data['strat_log'] else "No strategy query run.")
 
     doc.add_heading("6. Recent Intel (News)", 1)
@@ -301,25 +315,30 @@ def generate_full_dossier(data):
         except: doc.add_paragraph("News unavailable.")
     else: doc.add_paragraph("No news found.")
 
+    # SCANNER SECTION (WITH GAMMA)
     if data['scan'] is not None and not data['scan'].empty:
         doc.add_heading("7. ATM Scan Results (Full List)", 1)
+        # Added Gamma Column to Word Table
         st_t = doc.add_table(rows=1, cols=5); st_t.style = 'Table Grid'
         h = st_t.rows[0].cells
         h[0].text='Ticker'; h[1].text='Strike'; h[2].text='Price'; h[3].text='Vol'; h[4].text='Gamma'
+        
         for _, r in data['scan'].iterrows():
             row = st_t.add_row().cells
-            row[0].text=str(r['Ticker']); row[1].text=str(r['ATM Strike'])
-            row[2].text=str(r['Option Price']); row[3].text=str(r['Volume'])
-            row[4].text=f"{r.get('Gamma', 0):.4f}"
+            row[0].text=str(r['Ticker'])
+            row[1].text=str(r['ATM Strike'])
+            row[2].text=str(r['Option Price'])
+            row[3].text=str(r['Volume'])
+            row[4].text=f"{r.get('Gamma', 0):.4f}" # Add Gamma to Word
+
     b = BytesIO(); doc.save(b); return b
 
-# --- SCANNER (WITH SAFETY & GAMMA) ---
+# --- SCANNER (WITH GAMMA CALCULATION) ---
 def run_scan(tickers):
     res = []
     bar = st.progress(0); txt = st.empty()
     for i, t in enumerate(tickers):
-        # SAFETY MODE: SLOWER SCAN TO PREVENT BAN
-        time.sleep(random.uniform(2.5, 4.5)) 
+        time.sleep(random.uniform(0.5, 1.5))
         try:
             txt.text(f"Scanning {t}...")
             stk = yf.Ticker(t)
@@ -327,10 +346,12 @@ def run_scan(tickers):
             dates = stk.options
             if not dates: continue
             
+            # Get chain
             calls = stk.option_chain(dates[0]).calls
             calls['diff'] = abs(calls['strike'] - curr)
             atm = calls.loc[calls['diff'].idxmin()]
             
+            # Calculate Gamma
             days_to_exp = (datetime.strptime(dates[0], "%Y-%m-%d") - datetime.now()).days
             if days_to_exp < 1: days_to_exp = 1
             iv = atm['impliedVolatility']
@@ -339,7 +360,7 @@ def run_scan(tickers):
             res.append({
                 'Ticker': t, 'ATM Strike': atm['strike'], 'Exp Date': dates[0],
                 'Option Price': atm['lastPrice'], 'Volume': atm['volume'], 'Open Int': atm['openInterest'],
-                'Gamma': round(gamma, 4)
+                'Gamma': round(gamma, 4) # Add Gamma to Result
             })
         except: pass
         bar.progress((i+1)/len(tickers))
@@ -415,6 +436,7 @@ if ticker:
                 if d > 0.001:
                     move_val = (desired_profit / 100) / d
                     target_price_val = current_price + move_val
+                    # INLINE STYLE
                     st.markdown(f"""
                     <div style="background-color: #1E3D59; padding: 20px; border-radius: 10px; border-left: 10px solid #00FF7F; color: white; margin-bottom: 20px;">
                         <h4 style='margin:0; color: white;'>Target Stock Price: <b>${target_price_val:.2f}</b></h4>
@@ -425,6 +447,7 @@ if ticker:
             st.subheader("🗓️ Holiday Decay Calculator")
             holidays = st.number_input("Days Closed", 1)
             decay_loss_val = abs(t) * holidays * 100
+            # INLINE STYLE
             st.markdown(f"""
             <div style="background-color: #330000; padding: 20px; border-radius: 10px; border-left: 10px solid #FF4B4B; color: white;">
                 <h4 style='margin:0; color: white;'>Estimated Loss: <b>${decay_loss_val:.2f} per contract</b></h4>
