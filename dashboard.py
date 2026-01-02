@@ -49,16 +49,16 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- HELPER FUNCTIONS ---
-def fetch_with_retry(func, *args, retries=3):
+# --- HELPER FUNCTIONS (SMART RETRY) ---
+def fetch_with_retry(func, *args, retries=4):
     for i in range(retries):
         try:
             return func(*args)
         except Exception as e:
             error_msg = str(e).lower()
-            # Handle rate limiting (429) errors by waiting
+            # If rate limited, wait longer (Exponential Backoff)
             if "too many requests" in error_msg or "429" in error_msg:
-                wait_time = (1 * (i + 1)) + random.uniform(0.5, 1.5)
+                wait_time = (2 ** i) + random.uniform(0, 1) # Waits 1s, 2s, 4s, 8s...
                 time.sleep(wait_time)
                 continue
             raise e
@@ -67,7 +67,6 @@ def fetch_with_retry(func, *args, retries=3):
 @st.cache_data(ttl=900) 
 def get_stock_history_and_info(ticker_symbol):
     def _get():
-        # FIX: Removed manual session to let YF handle connection
         stock = yf.Ticker(ticker_symbol)
         history = stock.history(period="1mo")
         info = stock.info
@@ -314,19 +313,45 @@ def generate_full_dossier(data):
             row[4].text=f"{r.get('Gamma', 0):.4f}"
     b = BytesIO(); doc.save(b); return b
 
-# --- SCANNER (WITH SAFETY & GAMMA) ---
+# --- OPTIMIZED SCANNER (BATCH + SAFE THROTTLE) ---
 def run_scan(tickers):
     res = []
     bar = st.progress(0); txt = st.empty()
+    
+    # 1. BATCH DOWNLOAD ALL PRICES FIRST (Saves 50% of requests)
+    try:
+        txt.text("Batch fetching prices (Fast)...")
+        # 'group_by' ensures consistent structure for 1 or 100 tickers
+        batch_data = yf.download(tickers, period="1d", group_by='ticker', progress=False)
+    except:
+        batch_data = pd.DataFrame()
+
+    # 2. Loop through for Options Data (Must be done individually)
     for i, t in enumerate(tickers):
-        # Moderate sleep to prevent rate limiting since we don't have custom session
-        time.sleep(random.uniform(1.0, 2.0)) 
+        # SAFETY THROTTLE: 1.0 second wait is the minimum to avoid "Too Many Requests"
+        time.sleep(1.0) 
+        
         try:
-            txt.text(f"Scanning {t}...")
-            # FIX: Removed session
+            txt.text(f"Scanning options for {t}...")
+            
+            # --- GET PRICE FROM BATCH DATA (Zero API cost here) ---
+            curr = 0
+            if not batch_data.empty:
+                try:
+                    if len(tickers) > 1:
+                        # Extract close price from MultiIndex
+                        curr = batch_data[t]['Close'].iloc[-1]
+                    else:
+                        curr = batch_data['Close'].iloc[-1]
+                except: pass
+            
             stk = yf.Ticker(t)
             
-            curr = stk.history(period='1d')['Close'].iloc[-1]
+            # Fallback: If batch failed, fetch price individually (costs 1 API call)
+            if curr == 0: 
+                curr = stk.history(period='1d')['Close'].iloc[-1]
+            
+            # --- GET OPTIONS (This is the heavy API call) ---
             dates = stk.options
             if not dates: continue
             
@@ -344,8 +369,12 @@ def run_scan(tickers):
                 'Option Price': atm['lastPrice'], 'Volume': atm['volume'], 'Open Int': atm['openInterest'],
                 'Gamma': round(gamma, 4)
             })
-        except: pass
+        except: 
+            # If a specific ticker fails, just skip it and keep going
+            pass
+            
         bar.progress((i+1)/len(tickers))
+        
     txt.empty(); bar.empty()
     return pd.DataFrame(res)
 
