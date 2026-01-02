@@ -313,7 +313,7 @@ def generate_full_dossier(data):
             row[4].text=f"{r.get('Gamma', 0):.4f}"
     b = BytesIO(); doc.save(b); return b
 
-# --- OPTIMIZED SCANNER (SLOW & SAFE) ---
+# --- OPTIMIZED SCANNER (INTELLIGENT DATE + SAFE THROTTLE) ---
 def run_scan(tickers):
     res = []
     bar = st.progress(0); txt = st.empty()
@@ -349,17 +349,32 @@ def run_scan(tickers):
             dates = stk.options
             if not dates: continue
             
-            calls = stk.option_chain(dates[0]).calls
+            # --- DATE LOGIC FIX: Pick the *useful* next expiration ---
+            target_date = dates[0]
+            try:
+                # Parse date to check distance
+                first_dt = datetime.strptime(dates[0], "%Y-%m-%d")
+                curr_dt = datetime.now()
+                days_diff = (first_dt - curr_dt).days
+                
+                # If expiring in < 4 days (e.g. today/Fri/Sat/Sun), try grabbing next week
+                if days_diff < 4 and len(dates) > 1:
+                    target_date = dates[1]
+            except: 
+                pass # Default to dates[0] if parse fails
+            
+            calls = stk.option_chain(target_date).calls
             calls['diff'] = abs(calls['strike'] - curr)
             atm = calls.loc[calls['diff'].idxmin()]
             
-            days_to_exp = (datetime.strptime(dates[0], "%Y-%m-%d") - datetime.now()).days
+            # Recalculate days based on the SELECTED target date
+            days_to_exp = (datetime.strptime(target_date, "%Y-%m-%d") - datetime.now()).days
             if days_to_exp < 1: days_to_exp = 1
             iv = atm['impliedVolatility']
             _, gamma, _ = calculate_greeks(curr, atm['strike'], days_to_exp/365, 0.045, iv)
             
             res.append({
-                'Ticker': t, 'ATM Strike': atm['strike'], 'Exp Date': dates[0],
+                'Ticker': t, 'ATM Strike': atm['strike'], 'Exp Date': target_date,
                 'Option Price': atm['lastPrice'], 'Volume': atm['volume'], 'Open Int': atm['openInterest'],
                 'Gamma': round(gamma, 4)
             })
