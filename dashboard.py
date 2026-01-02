@@ -67,7 +67,12 @@ def get_stock_history_and_info(ticker_symbol):
         stock = yf.Ticker(ticker_symbol)
         history = stock.history(period="1mo")
         info = stock.info
-        return history, info, stock.news
+        # SAFE NEWS FETCHING
+        try:
+            news = stock.news
+        except:
+            news = []
+        return history, info, news
     return fetch_with_retry(_get)
 
 @st.cache_data(ttl=900)
@@ -280,8 +285,14 @@ def generate_full_dossier(data):
     # 6. News (Tab 8)
     doc.add_heading("6. Recent Intel (News)", 1)
     if data['news']:
-        for n in data['news'][:3]:
-            doc.add_paragraph(f"• {n['title']} ({n['publisher']})")
+        try:
+            for n in data['news'][:3]:
+                # SAFE ACCESS TO NEWS KEYS
+                title = n.get('title', 'No Title')
+                pub = n.get('publisher', 'Unknown')
+                doc.add_paragraph(f"• {title} ({pub})")
+        except:
+            doc.add_paragraph("News data unavailable.")
     else:
         doc.add_paragraph("No news found.")
 
@@ -399,7 +410,14 @@ if ticker:
 
         with tabs[6]: st.metric("Max Pain", f"${max_pain_val:.2f}")
         with tabs[7]:
-            for item in news_data[:3]: st.markdown(f"- [{item['title']}]({item['link']})")
+            if news_data:
+                try:
+                    for item in news_data[:3]: 
+                        title = item.get('title', 'No Title')
+                        link = item.get('link', '#')
+                        st.markdown(f"- [{title}]({link})")
+                except: st.write("News unavailable.")
+            else: st.write("No news found.")
 
         with tabs[8]: # AI
             st.header("🤖 AI Chart Analyst")
