@@ -41,12 +41,10 @@ def check_password():
 if not check_password():
     st.stop()
 
-# --- CSS STYLING ---
+# --- CSS STYLING (Backup) ---
 st.markdown("""
 <style>
     .metric-card { background-color: #0e1117; border: 1px solid #262730; padding: 20px; border-radius: 10px; color: white; }
-    .profit-box { background-color: #1E3D59; padding: 20px; border-radius: 10px; border-left: 10px solid #00FF7F; margin-bottom: 20px; color: white; }
-    .theta-box { background-color: #330000; padding: 20px; border-radius: 10px; border-left: 10px solid #FF4B4B; color: white; }
     .stButton>button { width: 100%; }
 </style>
 """, unsafe_allow_html=True)
@@ -258,7 +256,6 @@ def add_colored_box(doc, text, color_hex):
     # Set shading (XML hack)
     shading_elm = parse_xml(r'<w:shd {} w:fill="{}"/>'.format(nsdecls('w'), color_hex))
     cell._tc.get_or_add_tcPr().append(shading_elm)
-    # White text (Optional, difficult in pure python-docx without style, so we rely on contrast)
 
 # --- MASTER REPORT GENERATOR ---
 def generate_full_dossier(data):
@@ -425,12 +422,24 @@ if ticker:
                 if d > 0.001:
                     move_val = (desired_profit / 100) / d
                     target_price_val = current_price + move_val
-                    st.markdown(f"<div class='profit-box'>Target Stock Price: <b>${target_price_val:.2f}</b><br>(Move: +${move_val:.2f})</div>", unsafe_allow_html=True)
+                    # INLINE STYLE - GUARANTEED VISIBILITY
+                    st.markdown(f"""
+                    <div style="background-color: #1E3D59; padding: 20px; border-radius: 10px; border-left: 10px solid #00FF7F; color: white; margin-bottom: 20px;">
+                        <h4 style='margin:0; color: white;'>Target Stock Price: <b>${target_price_val:.2f}</b></h4>
+                        <p style='margin:0; color: white;'>Stock needs to move: +${move_val:.2f}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
             
             st.subheader("🗓️ Holiday Decay Calculator")
             holidays = st.number_input("Days Closed", 1)
             decay_loss_val = abs(t) * holidays * 100
-            st.markdown(f"<div class='theta-box'>Estimated Loss: <b>${decay_loss_val:.2f} per contract</b></div>", unsafe_allow_html=True)
+            # INLINE STYLE - GUARANTEED VISIBILITY
+            st.markdown(f"""
+            <div style="background-color: #330000; padding: 20px; border-radius: 10px; border-left: 10px solid #FF4B4B; color: white;">
+                <h4 style='margin:0; color: white;'>Estimated Loss: <b>${decay_loss_val:.2f} per contract</b></h4>
+                <p style='margin:0; color: white;'>While you sleep...</p>
+            </div>
+            """, unsafe_allow_html=True)
 
         with tabs[6]: st.metric("Max Pain", f"${max_pain_val:.2f}")
         with tabs[7]:
