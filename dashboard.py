@@ -49,22 +49,22 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- HELPER FUNCTIONS (SMART RETRY) ---
-def fetch_with_retry(func, *args, retries=4):
+# --- HELPER FUNCTIONS (AGGRESSIVE DEFENSE) ---
+def fetch_with_retry(func, *args, retries=3):
     for i in range(retries):
         try:
             return func(*args)
         except Exception as e:
             error_msg = str(e).lower()
-            # If rate limited, wait longer (Exponential Backoff)
+            # If rate limited, wait SIGNIFICANTLY longer to clear the ban
             if "too many requests" in error_msg or "429" in error_msg:
-                wait_time = (2 ** i) + random.uniform(0, 1) # Waits 1s, 2s, 4s, 8s...
+                wait_time = 15 * (i + 1)  # Wait 15s, then 30s, then 45s...
                 time.sleep(wait_time)
                 continue
             raise e
     return func(*args)
 
-@st.cache_data(ttl=900) 
+@st.cache_data(ttl=3600) # Increased cache time to 1 hour to prevent re-fetching
 def get_stock_history_and_info(ticker_symbol):
     def _get():
         stock = yf.Ticker(ticker_symbol)
@@ -75,7 +75,7 @@ def get_stock_history_and_info(ticker_symbol):
         return history, info, news
     return fetch_with_retry(_get)
 
-@st.cache_data(ttl=900)
+@st.cache_data(ttl=3600)
 def get_option_chain_data(ticker_symbol, date):
     def _get():
         stock = yf.Ticker(ticker_symbol)
@@ -313,45 +313,39 @@ def generate_full_dossier(data):
             row[4].text=f"{r.get('Gamma', 0):.4f}"
     b = BytesIO(); doc.save(b); return b
 
-# --- OPTIMIZED SCANNER (BATCH + SAFE THROTTLE) ---
+# --- OPTIMIZED SCANNER (SLOW & SAFE) ---
 def run_scan(tickers):
     res = []
     bar = st.progress(0); txt = st.empty()
     
-    # 1. BATCH DOWNLOAD ALL PRICES FIRST (Saves 50% of requests)
+    # 1. BATCH DOWNLOAD (Still used because it's efficient)
     try:
-        txt.text("Batch fetching prices (Fast)...")
-        # 'group_by' ensures consistent structure for 1 or 100 tickers
+        txt.text("Batch fetching prices...")
         batch_data = yf.download(tickers, period="1d", group_by='ticker', progress=False)
     except:
         batch_data = pd.DataFrame()
 
-    # 2. Loop through for Options Data (Must be done individually)
+    # 2. SLOW Loop (Aggressive Throttle)
     for i, t in enumerate(tickers):
-        # SAFETY THROTTLE: 1.0 second wait is the minimum to avoid "Too Many Requests"
-        time.sleep(1.0) 
+        # SAFETY THROTTLE: 3.0 seconds wait (Very Safe)
+        time.sleep(3.0) 
         
         try:
             txt.text(f"Scanning options for {t}...")
             
-            # --- GET PRICE FROM BATCH DATA (Zero API cost here) ---
             curr = 0
             if not batch_data.empty:
                 try:
                     if len(tickers) > 1:
-                        # Extract close price from MultiIndex
                         curr = batch_data[t]['Close'].iloc[-1]
                     else:
                         curr = batch_data['Close'].iloc[-1]
                 except: pass
             
             stk = yf.Ticker(t)
-            
-            # Fallback: If batch failed, fetch price individually (costs 1 API call)
             if curr == 0: 
                 curr = stk.history(period='1d')['Close'].iloc[-1]
             
-            # --- GET OPTIONS (This is the heavy API call) ---
             dates = stk.options
             if not dates: continue
             
@@ -370,7 +364,6 @@ def run_scan(tickers):
                 'Gamma': round(gamma, 4)
             })
         except: 
-            # If a specific ticker fails, just skip it and keep going
             pass
             
         bar.progress((i+1)/len(tickers))
