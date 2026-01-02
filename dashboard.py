@@ -41,7 +41,7 @@ def check_password():
 if not check_password():
     st.stop()
 
-# --- CSS STYLING (Backup) ---
+# --- CSS STYLING ---
 st.markdown("""
 <style>
     .metric-card { background-color: #0e1117; border: 1px solid #262730; padding: 20px; border-radius: 10px; color: white; }
@@ -249,11 +249,9 @@ def create_all_static_plots(ticker, S, K, days, iv, calls, puts):
 
 # --- REPORT HELPER: COLORED BOX ---
 def add_colored_box(doc, text, color_hex):
-    # Adds a table with 1 cell and background color
     table = doc.add_table(rows=1, cols=1)
     cell = table.cell(0, 0)
     cell.text = text
-    # Set shading (XML hack)
     shading_elm = parse_xml(r'<w:shd {} w:fill="{}"/>'.format(nsdecls('w'), color_hex))
     cell._tc.get_or_add_tcPr().append(shading_elm)
 
@@ -287,11 +285,10 @@ def generate_full_dossier(data):
     
     doc.add_paragraph("--- Strategy Calculators ---").bold = True
     
-    # COLORED BOXES IN WORD
     profit_text = f"PROFIT TARGET:\nTo make ${data['profit_goal']}, Stock needs to hit ${data['profit_price']:.2f}."
     add_colored_box(doc, profit_text, "1E3D59") # Dark Blue
     
-    doc.add_paragraph("") # spacer
+    doc.add_paragraph("")
     
     loss_text = f"HOLIDAY DECAY RISK:\n{data['holidays']} days closed = Estimated ${data['decay_loss']:.2f} loss."
     add_colored_box(doc, loss_text, "FF4B4B") # Red
@@ -318,18 +315,25 @@ def generate_full_dossier(data):
         except: doc.add_paragraph("News unavailable.")
     else: doc.add_paragraph("No news found.")
 
+    # SCANNER SECTION (WITH GAMMA)
     if data['scan'] is not None and not data['scan'].empty:
         doc.add_heading("7. ATM Scan Results (Full List)", 1)
-        st_t = doc.add_table(rows=1, cols=4); st_t.style = 'Table Grid'
-        h = st_t.rows[0].cells; h[0].text='Ticker'; h[1].text='Strike'; h[2].text='Price'; h[3].text='Vol'
+        # Added Gamma Column to Word Table
+        st_t = doc.add_table(rows=1, cols=5); st_t.style = 'Table Grid'
+        h = st_t.rows[0].cells
+        h[0].text='Ticker'; h[1].text='Strike'; h[2].text='Price'; h[3].text='Vol'; h[4].text='Gamma'
+        
         for _, r in data['scan'].iterrows():
             row = st_t.add_row().cells
-            row[0].text=str(r['Ticker']); row[1].text=str(r['ATM Strike'])
-            row[2].text=str(r['Option Price']); row[3].text=str(r['Volume'])
+            row[0].text=str(r['Ticker'])
+            row[1].text=str(r['ATM Strike'])
+            row[2].text=str(r['Option Price'])
+            row[3].text=str(r['Volume'])
+            row[4].text=f"{r.get('Gamma', 0):.4f}" # Add Gamma to Word
 
     b = BytesIO(); doc.save(b); return b
 
-# --- SCANNER ---
+# --- SCANNER (WITH GAMMA CALCULATION) ---
 def run_scan(tickers):
     res = []
     bar = st.progress(0); txt = st.empty()
@@ -341,12 +345,22 @@ def run_scan(tickers):
             curr = stk.history(period='1d')['Close'].iloc[-1]
             dates = stk.options
             if not dates: continue
+            
+            # Get chain
             calls = stk.option_chain(dates[0]).calls
             calls['diff'] = abs(calls['strike'] - curr)
             atm = calls.loc[calls['diff'].idxmin()]
+            
+            # Calculate Gamma
+            days_to_exp = (datetime.strptime(dates[0], "%Y-%m-%d") - datetime.now()).days
+            if days_to_exp < 1: days_to_exp = 1
+            iv = atm['impliedVolatility']
+            _, gamma, _ = calculate_greeks(curr, atm['strike'], days_to_exp/365, 0.045, iv)
+            
             res.append({
                 'Ticker': t, 'ATM Strike': atm['strike'], 'Exp Date': dates[0],
-                'Option Price': atm['lastPrice'], 'Volume': atm['volume'], 'Open Int': atm['openInterest']
+                'Option Price': atm['lastPrice'], 'Volume': atm['volume'], 'Open Int': atm['openInterest'],
+                'Gamma': round(gamma, 4) # Add Gamma to Result
             })
         except: pass
         bar.progress((i+1)/len(tickers))
@@ -422,7 +436,7 @@ if ticker:
                 if d > 0.001:
                     move_val = (desired_profit / 100) / d
                     target_price_val = current_price + move_val
-                    # INLINE STYLE - GUARANTEED VISIBILITY
+                    # INLINE STYLE
                     st.markdown(f"""
                     <div style="background-color: #1E3D59; padding: 20px; border-radius: 10px; border-left: 10px solid #00FF7F; color: white; margin-bottom: 20px;">
                         <h4 style='margin:0; color: white;'>Target Stock Price: <b>${target_price_val:.2f}</b></h4>
@@ -433,7 +447,7 @@ if ticker:
             st.subheader("🗓️ Holiday Decay Calculator")
             holidays = st.number_input("Days Closed", 1)
             decay_loss_val = abs(t) * holidays * 100
-            # INLINE STYLE - GUARANTEED VISIBILITY
+            # INLINE STYLE
             st.markdown(f"""
             <div style="background-color: #330000; padding: 20px; border-radius: 10px; border-left: 10px solid #FF4B4B; color: white;">
                 <h4 style='margin:0; color: white;'>Estimated Loss: <b>${decay_loss_val:.2f} per contract</b></h4>
