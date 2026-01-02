@@ -13,7 +13,8 @@ from PIL import Image
 from io import BytesIO
 import xlsxwriter
 from docx import Document
-from docx.shared import Inches
+from docx.shared import Inches, Pt, RGBColor
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="Options Command Center", layout="wide", page_icon="🚀")
@@ -38,13 +39,11 @@ def check_password():
 if not check_password():
     st.stop()
 
-# --- CSS STYLING (COLORS RESTORED FROM SCREENSHOT 696) ---
+# --- CSS STYLING ---
 st.markdown("""
 <style>
     .metric-card { background-color: #0e1117; border: 1px solid #262730; padding: 20px; border-radius: 10px; color: white; }
-    /* Blue Box with Green Stripe */
     .profit-box { background-color: #1E3D59; padding: 20px; border-radius: 10px; border-left: 10px solid #00FF7F; margin-bottom: 20px; color: white; }
-    /* Dark Red Box with Red Stripe */
     .theta-box { background-color: #330000; padding: 20px; border-radius: 10px; border-left: 10px solid #FF4B4B; color: white; }
     .stButton>button { width: 100%; }
 </style>
@@ -68,7 +67,7 @@ def get_stock_history_and_info(ticker_symbol):
         stock = yf.Ticker(ticker_symbol)
         history = stock.history(period="1mo")
         info = stock.info
-        return history, info
+        return history, info, stock.news
     return fetch_with_retry(_get)
 
 @st.cache_data(ttl=900)
@@ -126,57 +125,34 @@ def calculate_max_pain(options_chain):
     return df_pain.loc[df_pain['total_loss'].idxmin()]['strike']
 
 # --- INTERACTIVE PLOTS (SCREEN) ---
-
-# 1. THE SIMULATOR (Restored to Match Screenshot 711)
-def plot_simulation_interactive(S, K, days_left, iv, r=0.045, purchase_price=0):
-    prices = np.linspace(S * 0.8, S * 1.2, 100)
-    
-    # Time 1: Today
-    T1 = max(days_left / 365.0, 0.0001)
-    pnl_today = [black_scholes_price(p, K, T1, r, iv) - purchase_price for p in prices]
-    
-    # Time 2: Halfway
-    T2 = max((days_left / 2) / 365.0, 0.0001)
-    pnl_half = [black_scholes_price(p, K, T2, r, iv) - purchase_price for p in prices]
-    
-    # Time 3: Expiration
-    T3 = 0.0001
-    pnl_exp = [black_scholes_price(p, K, T3, r, iv) - purchase_price for p in prices]
-
-    fig = go.Figure()
-    # Blue Solid
-    fig.add_trace(go.Scatter(x=prices, y=pnl_today, mode='lines', name='Today (T+0)', line=dict(color='#4DA6FF', width=3)))
-    # Yellow Dashed
-    fig.add_trace(go.Scatter(x=prices, y=pnl_half, mode='lines', name=f'Halfway (T+{int(days_left/2)})', line=dict(color='#FFD700', width=2, dash='dash')))
-    # Red Dotted
-    fig.add_trace(go.Scatter(x=prices, y=pnl_exp, mode='lines', name='Expiration (Max Risk)', line=dict(color='#FF4B4B', width=2, dash='dot')))
-    
-    fig.add_hline(y=0, line_color="white", opacity=0.5)
-    fig.add_vline(x=S, line_color="gray", line_dash="dash", annotation_text="Current Price")
-
-    fig.update_layout(
-        title="🔮 Future Simulator: Profit/Loss over Time",
-        xaxis_title="Stock Price ($)",
-        yaxis_title="Estimated P&L ($)",
-        template="plotly_dark",
-        hovermode="x unified",
-        dragmode='pan',
-        height=500
-    )
-    return fig
-
 def plot_greeks_interactive(current_price, strike, days_left, iv):
     prices = np.linspace(strike * 0.8, strike * 1.2, 100)
     T = max(days_left / 365.0, 0.001)
     deltas = [calculate_greeks(p, strike, T, 0.045, iv)[0] for p in prices]
     gammas = [calculate_greeks(p, strike, T, 0.045, iv)[1] for p in prices]
     curr_d, _, _ = calculate_greeks(current_price, strike, T, 0.045, iv)
-    
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=prices, y=deltas, mode='lines', name='Delta', line=dict(color='#4DA6FF', width=3)))
     fig.add_trace(go.Scatter(x=prices, y=gammas, mode='lines', name='Gamma', line=dict(color='#00FF7F', width=2, dash='dash'), yaxis="y2"))
     fig.add_trace(go.Scatter(x=[current_price], y=[curr_d], mode='markers', name='You', marker=dict(color='white', size=10)))
     fig.update_layout(title="Greeks Profile", template="plotly_dark", height=450, yaxis2=dict(overlaying="y", side="right"), dragmode='pan')
+    return fig
+
+def plot_simulation_interactive(S, K, days_left, iv, r=0.045, purchase_price=0):
+    prices = np.linspace(S * 0.8, S * 1.2, 100)
+    T1 = max(days_left / 365.0, 0.0001)
+    pnl_today = [black_scholes_price(p, K, T1, r, iv) - purchase_price for p in prices]
+    T2 = max((days_left / 2) / 365.0, 0.0001)
+    pnl_half = [black_scholes_price(p, K, T2, r, iv) - purchase_price for p in prices]
+    T3 = 0.0001
+    pnl_exp = [black_scholes_price(p, K, T3, r, iv) - purchase_price for p in prices]
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=prices, y=pnl_today, mode='lines', name='Today (T+0)', line=dict(color='#4DA6FF', width=3)))
+    fig.add_trace(go.Scatter(x=prices, y=pnl_half, mode='lines', name=f'Halfway (T+{int(days_left/2)})', line=dict(color='#FFD700', width=2, dash='dash')))
+    fig.add_trace(go.Scatter(x=prices, y=pnl_exp, mode='lines', name='Expiration (Max Risk)', line=dict(color='#FF4B4B', width=2, dash='dot')))
+    fig.add_hline(y=0, line_color="white", opacity=0.5)
+    fig.add_vline(x=S, line_color="gray", line_dash="dash", annotation_text="Current Price")
+    fig.update_layout(title="🔮 Future Simulator", xaxis_title="Price", yaxis_title="P&L", template="plotly_dark", height=500, dragmode='pan')
     return fig
 
 def plot_whale_activity_interactive(calls_df, current_strike):
@@ -185,7 +161,6 @@ def plot_whale_activity_interactive(calls_df, current_strike):
     except: idx = 0
     start = max(0, idx - 4); end = min(len(strikes), idx + 5)
     subset = calls_df[calls_df['strike'].isin(strikes[start:end])]
-    
     fig = go.Figure()
     fig.add_trace(go.Bar(x=subset['strike'], y=subset['openInterest'], name='OI', marker_color='#4DA6FF'))
     fig.add_trace(go.Bar(x=subset['strike'], y=subset['volume'], name='Vol', marker_color='#00FF7F'))
@@ -198,7 +173,6 @@ def plot_flow_battle_interactive(calls, puts, current_strike):
     try: idx = df.index.get_loc(current_strike)
     except: idx = len(df)//2
     sub = df.iloc[max(0, idx-5):min(len(df), idx+6)]
-    
     fig = go.Figure()
     fig.add_trace(go.Bar(x=sub.index, y=sub['volume_x'], name='Bulls', marker_color='#00FF7F'))
     fig.add_trace(go.Bar(x=sub.index, y=sub['volume_y'], name='Bears', marker_color='#FF4B4B'))
@@ -206,65 +180,121 @@ def plot_flow_battle_interactive(calls, puts, current_strike):
     return fig
 
 # --- STATIC PLOTS (WORD REPORT) ---
-def create_static_plots(ticker, S, K, days, iv, calls):
+def create_all_static_plots(ticker, S, K, days, iv, calls, puts):
     plots = {}
     
-    # Whale
+    # 1. Whale Detector
     strikes = sorted(calls['strike'].unique())
     try: idx = strikes.index(K)
     except: idx = 0
-    sub = calls[calls['strike'].isin(strikes[max(0, idx-3):min(len(strikes), idx+4)])]
-    
-    fig1, ax1 = plt.subplots(figsize=(6,3))
+    sub = calls[calls['strike'].isin(strikes[max(0, idx-4):min(len(strikes), idx+5)])]
+    fig1, ax1 = plt.subplots(figsize=(7,3.5))
     x = np.arange(len(sub))
     ax1.bar(x-0.2, sub['openInterest'], 0.4, label='OI', color='#4DA6FF')
     ax1.bar(x+0.2, sub['volume'], 0.4, label='Vol', color='#00FF7F')
     ax1.set_xticks(x); ax1.set_xticklabels(sub['strike'].astype(int))
-    ax1.set_title(f"Whale Activity: {ticker}"); ax1.legend()
+    ax1.set_title(f"Whale Detector: {ticker}"); ax1.legend()
     b1 = BytesIO(); fig1.savefig(b1, format='png'); b1.seek(0); plots['whale'] = b1
     plt.close(fig1)
 
-    # Sim
+    # 2. Simulator
     prices = np.linspace(K*0.8, K*1.2, 50)
     T = max(days/365, 0.001)
     base = black_scholes_price(S, K, T, 0.045, iv)
     pnl = [black_scholes_price(p, K, T, 0.045, iv) - base for p in prices]
-    
-    fig2, ax2 = plt.subplots(figsize=(6,3))
-    ax2.plot(prices, pnl, color='#4DA6FF')
+    fig2, ax2 = plt.subplots(figsize=(7,3.5))
+    ax2.plot(prices, pnl, color='#4DA6FF', linewidth=2, label='Today')
     ax2.axhline(0, color='gray', linestyle='--')
-    ax2.set_title("Simulator"); ax2.grid(True, alpha=0.3)
+    ax2.axvline(S, color='red', linestyle=':', label='Curr Price')
+    ax2.set_title("Future P&L Simulator"); ax2.legend(); ax2.grid(True, alpha=0.3)
     b2 = BytesIO(); fig2.savefig(b2, format='png'); b2.seek(0); plots['sim'] = b2
     plt.close(fig2)
+
+    # 3. Flow Monitor (Battle Map)
+    c_vol = calls[['strike', 'volume']].groupby('strike').sum()
+    p_vol = puts[['strike', 'volume']].groupby('strike').sum()
+    df = pd.merge(c_vol, p_vol, on='strike', how='outer').fillna(0).sort_index()
+    try: idx = df.index.get_loc(K)
+    except: idx = len(df)//2
+    sub_b = df.iloc[max(0, idx-5):min(len(df), idx+6)]
+    fig3, ax3 = plt.subplots(figsize=(7,3.5))
+    x3 = np.arange(len(sub_b))
+    ax3.bar(x3-0.2, sub_b['volume_x'], 0.4, label='Bulls (Calls)', color='#00FF7F')
+    ax3.bar(x3+0.2, sub_b['volume_y'], 0.4, label='Bears (Puts)', color='#FF4B4B')
+    ax3.set_xticks(x3); ax3.set_xticklabels(sub_b.index.astype(int))
+    ax3.set_title("Flow Monitor (Battle Map)"); ax3.legend()
+    b3 = BytesIO(); fig3.savefig(b3, format='png'); b3.seek(0); plots['flow'] = b3
+    plt.close(fig3)
     
     return plots
 
-# --- REPORT GENERATOR ---
-def generate_report(ticker, S, K, date, d, g, t, ai_txt, plots, scan_res):
+# --- MASTER REPORT GENERATOR ---
+def generate_full_dossier(data):
     doc = Document()
-    doc.add_heading(f"TRADING REPORT: {ticker}", 0)
-    doc.add_paragraph(f"Date: {datetime.now().strftime('%Y-%m-%d')}")
     
-    doc.add_heading("1. Summary", 1)
-    doc.add_paragraph(f"Price: ${S:.2f} | Strike: ${K} | Exp: {date}")
-    doc.add_paragraph(f"Greeks: Delta {d:.2f}, Theta {t:.3f}, Gamma {g:.3f}")
+    # Header
+    head = doc.add_heading(f"MISSION REPORT: {data['ticker']}", 0)
+    head.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    doc.add_paragraph(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
     
-    doc.add_heading("2. AI Analysis", 1)
-    doc.add_paragraph(ai_txt if ai_txt else "No analysis run.")
+    # 1. Executive Summary Table
+    doc.add_heading("1. Executive Summary", 1)
+    t = doc.add_table(rows=2, cols=4); t.style = 'Table Grid'
+    r = t.rows[1].cells
+    r[0].text = data['ticker']; r[1].text = f"${data['price']:.2f}"
+    r[2].text = f"${data['strike']}"; r[3].text = str(data['exp'])
     
-    doc.add_heading("3. Charts", 1)
-    doc.add_picture(plots['whale'], width=Inches(5.5))
-    doc.add_picture(plots['sim'], width=Inches(5.5))
+    # 2. Key Metrics (Tabs 1-4, 7)
+    doc.add_heading("2. Key Intel Metrics", 1)
+    p = doc.add_paragraph()
+    p.add_run(f"• Implied Volatility (IV): ").bold = True; p.add_run(f"{data['iv']*100:.2f}%\n")
+    p.add_run(f"• Rule of 16 (Daily Move): ").bold = True; p.add_run(f"${data['daily_move']:.2f}\n")
+    p.add_run(f"• Max Pain Price: ").bold = True; p.add_run(f"${data['max_pain']:.2f}\n")
+    p.add_run(f"• Volume: ").bold = True; p.add_run(f"{data['volume']:,}")
+
+    # 3. Risk & Profit (Tab 6)
+    doc.add_heading("3. Risk & Strategy Profile", 1)
+    doc.add_paragraph(f"• Delta (Speed): {data['delta']:.2f}")
+    doc.add_paragraph(f"• Theta (Decay): {data['theta']:.3f}")
+    doc.add_paragraph(f"• Gamma (Accel): {data['gamma']:.3f}")
+    doc.add_paragraph("--- Projections ---").bold = True
+    doc.add_paragraph(f"• Profit Target: To make ${data['profit_goal']}, stock must hit ${data['profit_price']:.2f}.")
+    doc.add_paragraph(f"• Holiday Risk: {data['holidays']} days closed = ${data['decay_loss']:.2f} loss.")
     
-    if scan_res is not None and not scan_res.empty:
-        doc.add_heading("4. ATM Scan (Top 10)", 1)
-        t = doc.add_table(rows=1, cols=4); t.style = 'Table Grid'
-        h = t.rows[0].cells; h[0].text='Ticker'; h[1].text='Strike'; h[2].text='Price'; h[3].text='Vol'
-        for _, r in scan_res.head(10).iterrows():
-            row = t.add_row().cells
+    # 4. Visual Intelligence (Tabs 5, 11, 12)
+    doc.add_heading("4. Visual Intelligence", 1)
+    doc.add_paragraph("Whale Activity (Smart Money):")
+    doc.add_picture(data['plots']['whale'], width=Inches(6))
+    doc.add_paragraph("Flow Monitor (Bull/Bear Battle):")
+    doc.add_picture(data['plots']['flow'], width=Inches(6))
+    doc.add_paragraph("Future P&L Simulator:")
+    doc.add_picture(data['plots']['sim'], width=Inches(6))
+
+    # 5. Analysis & Strategy (Tabs 9, 10)
+    doc.add_heading("5. Strategic Analysis", 1)
+    doc.add_heading("AI Chart Analyst:", 3)
+    doc.add_paragraph(data['ai_text'] if data['ai_text'] else "No chart analysis run.")
+    doc.add_heading("Strategy Engine Log:", 3)
+    doc.add_paragraph(data['strat_log'] if data['strat_log'] else "No strategy query run.")
+
+    # 6. News (Tab 8)
+    doc.add_heading("6. Recent Intel (News)", 1)
+    if data['news']:
+        for n in data['news'][:3]:
+            doc.add_paragraph(f"• {n['title']} ({n['publisher']})")
+    else:
+        doc.add_paragraph("No news found.")
+
+    # 7. Scanner Results (Tab 13)
+    if data['scan'] is not None and not data['scan'].empty:
+        doc.add_heading("7. ATM Scan Results (Top 10)", 1)
+        st_t = doc.add_table(rows=1, cols=4); st_t.style = 'Table Grid'
+        h = st_t.rows[0].cells; h[0].text='Ticker'; h[1].text='Strike'; h[2].text='Price'; h[3].text='Vol'
+        for _, r in data['scan'].head(10).iterrows():
+            row = st_t.add_row().cells
             row[0].text=str(r['Ticker']); row[1].text=str(r['ATM Strike'])
             row[2].text=str(r['Option Price']); row[3].text=str(r['Volume'])
-            
+
     b = BytesIO(); doc.save(b); return b
 
 # --- SCANNER ---
@@ -303,7 +333,7 @@ if ticker:
     try:
         stock_conn = get_ticker_object(ticker)
         with st.spinner('Fetching market data...'):
-            history, info = get_stock_history_and_info(ticker)
+            history, info, news_data = get_stock_history_and_info(ticker)
             current_price = info.get('currentPrice', history['Close'].iloc[-1])
             prev_close = info.get('previousClose', history['Close'].iloc[-2])
             
@@ -319,6 +349,8 @@ if ticker:
             if days_left < 1: days_left = 1
             theo_price = black_scholes_price(current_price, strike_price, days_left/365, 0.045, contract_iv)
             d, g, t = calculate_greeks(current_price, strike_price, days_left/365, 0.045, contract_iv)
+            max_pain_val = calculate_max_pain(full_chain)
+            daily_move = (contract_iv * 100 / 16) / 100 * current_price
 
         st.title(f"📊 {ticker} Command Center 🔒")
         col1, col2, col3 = st.columns(3)
@@ -327,7 +359,6 @@ if ticker:
         col3.metric("Selected Expiration", selected_date)
         st.markdown("---")
 
-        # --- THE 13 TABS ---
         tabs = st.tabs([
             "1. Price", "2. Volume", "3. IV", "4. Rule of 16", 
             "5. Whale Detector", "6. Risk & Profit", "7. Max Pain", "8. News", 
@@ -338,52 +369,37 @@ if ticker:
         with tabs[0]: st.line_chart(history['Close'])
         with tabs[1]: st.metric("Volume", f"{info.get('volume', 0):,}")
         with tabs[2]: st.metric("IV", f"{contract_iv * 100:.2f}%")
-        with tabs[3]: st.metric("Expected Daily Move", f"${(contract_iv * 100 / 16) / 100 * current_price:.2f}")
+        with tabs[3]: st.metric("Expected Daily Move", f"${daily_move:.2f}")
 
         with tabs[4]: # Whale
             st.header("Whale Detector")
             st.plotly_chart(plot_whale_activity_interactive(calls, strike_price), use_container_width=True, config={'scrollZoom': True})
 
-        with tabs[5]: # Greeks
+        with tabs[5]: # Greeks & Calc
             st.header("Risk & Profit Hub")
             c1, c2, c3 = st.columns(3)
             c1.metric("Delta", f"{d:.2f}"); c2.metric("Gamma", f"{g:.3f}"); c3.metric("Theta", f"{t:.3f}")
             st.plotly_chart(plot_greeks_interactive(current_price, strike_price, days_left, contract_iv), use_container_width=True, config={'scrollZoom': True})
             
             st.markdown("---")
-            
-            # --- PROFIT TARGET & HOLIDAY DECAY (COLORS RESTORED) ---
             st.subheader("🎯 Profit Target Calculator")
             c_calc1, c_calc2 = st.columns([1, 2])
             with c_calc1: desired_profit = st.number_input("Desired Profit ($)", value=50, step=10)
             with c_calc2:
+                target_price_val = 0; move_val = 0
                 if d > 0.001:
-                    move = (desired_profit / 100) / d
-                    target = current_price + move
-                    # CSS CLASS INJECTION for BLUE/GREEN
-                    st.markdown(f"""
-                    <div class="profit-box">
-                        <h4 style='margin:0'>Target Stock Price: <b>${target:.2f}</b></h4>
-                        <p style='margin:0'>Stock needs to move: +${move:.2f}</p>
-                    </div>
-                    """, unsafe_allow_html=True)
+                    move_val = (desired_profit / 100) / d
+                    target_price_val = current_price + move_val
+                    st.markdown(f"<div class='profit-box'>Target Stock Price: <b>${target_price_val:.2f}</b><br>(Move: +${move_val:.2f})</div>", unsafe_allow_html=True)
             
             st.subheader("🗓️ Holiday Decay Calculator")
             holidays = st.number_input("Days Closed", 1)
-            loss = abs(t) * holidays * 100
-            # CSS CLASS INJECTION for RED
-            st.markdown(f"""
-            <div class="theta-box">
-                <h4 style='margin:0'>Estimated Loss: <b>${loss:.2f} per contract</b></h4>
-                <p style='margin:0'>While you sleep...</p>
-            </div>
-            """, unsafe_allow_html=True)
+            decay_loss_val = abs(t) * holidays * 100
+            st.markdown(f"<div class='theta-box'>Estimated Loss: <b>${decay_loss_val:.2f} per contract</b></div>", unsafe_allow_html=True)
 
-        with tabs[6]: st.metric("Max Pain", f"${calculate_max_pain(full_chain):.2f}")
+        with tabs[6]: st.metric("Max Pain", f"${max_pain_val:.2f}")
         with tabs[7]:
-            try: 
-                for item in stock_conn.news[:3]: st.markdown(f"- [{item['title']}]({item['link']})")
-            except: st.write("No news found.")
+            for item in news_data[:3]: st.markdown(f"- [{item['title']}]({item['link']})")
 
         with tabs[8]: # AI
             st.header("🤖 AI Chart Analyst")
@@ -394,8 +410,7 @@ if ticker:
                     genai.configure(api_key=st.secrets["api_keys"]["gemini"])
                     try:
                         model = genai.GenerativeModel("models/gemini-2.0-flash-exp")
-                        prompt = "Analyze for walls and traps."
-                        content = [prompt] + [Image.open(f) for f in up_files]
+                        content = ["Analyze for walls and traps."] + [Image.open(f) for f in up_files]
                         with st.spinner("Analyzing..."):
                             st.session_state["ai_result"] = model.generate_content(content).text
                             st.rerun()
@@ -404,18 +419,19 @@ if ticker:
 
         with tabs[9]: # Strategy
             st.header("💬 Strategy Engine")
+            if "strat_log" not in st.session_state: st.session_state["strat_log"] = ""
             q = st.text_input("Ask a strategy question:")
             if q and st.button("Ask AI"):
                  if "api_keys" in st.secrets:
                     genai.configure(api_key=st.secrets["api_keys"]["gemini"])
                     model = genai.GenerativeModel("models/gemini-2.0-flash-exp")
-                    st.write(model.generate_content(f"Context: {ticker} ${strike_price}. Question: {q}").text)
+                    resp = model.generate_content(f"Context: {ticker} ${strike_price}. Question: {q}").text
+                    st.session_state["strat_log"] = f"Q: {q}\nA: {resp}"
+                    st.write(resp)
 
         with tabs[10]: # Sim
             st.header("🔮 Future Simulator")
-            # RESTORED 3-LINE GRAPH
             st.plotly_chart(plot_simulation_interactive(current_price, strike_price, days_left, contract_iv, purchase_price=theo_price), use_container_width=True, config={'scrollZoom': True})
-            st.info("💡 **Hover** over any line to see the exact value. **Scroll** to zoom in.")
 
         with tabs[11]: # Flow
             st.header("🌊 Market Flow")
@@ -428,7 +444,6 @@ if ticker:
                 df_input = pd.read_excel(up_xl)
                 tickers = df_input.iloc[:, 0].dropna().astype(str).tolist()
                 st.session_state["scan_results"] = run_scan(tickers)
-            
             if "scan_results" in st.session_state:
                 st.dataframe(st.session_state["scan_results"], use_container_width=True)
                 buffer = BytesIO()
@@ -438,16 +453,25 @@ if ticker:
 
         # --- REPORT EXPORT ---
         st.sidebar.markdown("---")
-        safe_plots = create_static_plots(ticker, current_price, strike_price, days_left, contract_iv, calls)
-        scan_data = st.session_state.get("scan_results", None)
         
-        report_file = generate_report(
-            ticker, current_price, strike_price, selected_date, d, g, t, 
-            st.session_state.get("ai_result", ""), 
-            safe_plots, 
-            scan_data
-        )
-        st.sidebar.download_button("📄 Download Full Dossier", report_file.getvalue(), f"{ticker}_Dossier.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        # Prepare Comprehensive Data Pack
+        safe_plots = create_all_static_plots(ticker, current_price, strike_price, days_left, contract_iv, calls, puts)
+        data_pack = {
+            'ticker': ticker, 'price': current_price, 'strike': strike_price, 'exp': selected_date,
+            'iv': contract_iv, 'daily_move': daily_move, 'volume': info.get('volume', 0),
+            'max_pain': max_pain_val,
+            'delta': d, 'gamma': g, 'theta': t,
+            'profit_goal': desired_profit, 'profit_price': target_price_val,
+            'holidays': holidays, 'decay_loss': decay_loss_val,
+            'ai_text': st.session_state.get("ai_result", ""),
+            'strat_log': st.session_state.get("strat_log", ""),
+            'news': news_data,
+            'plots': safe_plots,
+            'scan': st.session_state.get("scan_results", None)
+        }
+        
+        report_file = generate_full_dossier(data_pack)
+        st.sidebar.download_button("📄 Download Full Dossier", report_file.getvalue(), f"{ticker}_Full_Dossier.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 
     except Exception as e:
         st.error(f"Waiting for data... ({e})")
