@@ -15,6 +15,8 @@ import xlsxwriter
 from docx import Document
 from docx.shared import Inches, Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml.ns import nsdecls
+from docx.oxml import parse_xml
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="Options Command Center", layout="wide", page_icon="🚀")
@@ -247,6 +249,17 @@ def create_all_static_plots(ticker, S, K, days, iv, calls, puts):
     
     return plots
 
+# --- REPORT HELPER: COLORED BOX ---
+def add_colored_box(doc, text, color_hex):
+    # Adds a table with 1 cell and background color
+    table = doc.add_table(rows=1, cols=1)
+    cell = table.cell(0, 0)
+    cell.text = text
+    # Set shading (XML hack)
+    shading_elm = parse_xml(r'<w:shd {} w:fill="{}"/>'.format(nsdecls('w'), color_hex))
+    cell._tc.get_or_add_tcPr().append(shading_elm)
+    # White text (Optional, difficult in pure python-docx without style, so we rely on contrast)
+
 # --- MASTER REPORT GENERATOR ---
 def generate_full_dossier(data):
     doc = Document()
@@ -275,9 +288,16 @@ def generate_full_dossier(data):
     doc.add_paragraph("Risk Profile Chart (Delta/Gamma):").bold = True
     doc.add_picture(data['plots']['greeks'], width=Inches(6))
     
-    doc.add_paragraph("--- Strategy ---").bold = True
-    doc.add_paragraph(f"• Profit Target: To make ${data['profit_goal']}, target ${data['profit_price']:.2f}.")
-    doc.add_paragraph(f"• Holiday Risk: {data['holidays']} days = ${data['decay_loss']:.2f} loss.")
+    doc.add_paragraph("--- Strategy Calculators ---").bold = True
+    
+    # COLORED BOXES IN WORD
+    profit_text = f"PROFIT TARGET:\nTo make ${data['profit_goal']}, Stock needs to hit ${data['profit_price']:.2f}."
+    add_colored_box(doc, profit_text, "1E3D59") # Dark Blue
+    
+    doc.add_paragraph("") # spacer
+    
+    loss_text = f"HOLIDAY DECAY RISK:\n{data['holidays']} days closed = Estimated ${data['decay_loss']:.2f} loss."
+    add_colored_box(doc, loss_text, "FF4B4B") # Red
     
     doc.add_heading("4. Visual Intelligence", 1)
     doc.add_paragraph("Whale Activity:")
@@ -305,7 +325,6 @@ def generate_full_dossier(data):
         doc.add_heading("7. ATM Scan Results (Full List)", 1)
         st_t = doc.add_table(rows=1, cols=4); st_t.style = 'Table Grid'
         h = st_t.rows[0].cells; h[0].text='Ticker'; h[1].text='Strike'; h[2].text='Price'; h[3].text='Vol'
-        # UNLIMITED ROWS
         for _, r in data['scan'].iterrows():
             row = st_t.add_row().cells
             row[0].text=str(r['Ticker']); row[1].text=str(r['ATM Strike'])
