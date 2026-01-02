@@ -17,7 +17,6 @@ from docx.shared import Inches, Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import nsdecls
 from docx.oxml import parse_xml
-import requests  # <--- ADDED: Critical for bypassing the block
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="Options Command Center", layout="wide", page_icon="🚀")
@@ -51,20 +50,14 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- HELPER FUNCTIONS ---
-# FIX: Create a standard browser session to fool Yahoo
-def get_session():
-    session = requests.Session()
-    session.headers.update({'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
-    return session
-
 def fetch_with_retry(func, *args, retries=3):
     for i in range(retries):
         try:
             return func(*args)
         except Exception as e:
             error_msg = str(e).lower()
+            # Handle rate limiting (429) errors by waiting
             if "too many requests" in error_msg or "429" in error_msg:
-                # Reduced wait time slightly to be more responsive
                 wait_time = (1 * (i + 1)) + random.uniform(0.5, 1.5)
                 time.sleep(wait_time)
                 continue
@@ -74,8 +67,8 @@ def fetch_with_retry(func, *args, retries=3):
 @st.cache_data(ttl=900) 
 def get_stock_history_and_info(ticker_symbol):
     def _get():
-        # FIX: Added session
-        stock = yf.Ticker(ticker_symbol, session=get_session())
+        # FIX: Removed manual session to let YF handle connection
+        stock = yf.Ticker(ticker_symbol)
         history = stock.history(period="1mo")
         info = stock.info
         try: news = stock.news
@@ -86,8 +79,7 @@ def get_stock_history_and_info(ticker_symbol):
 @st.cache_data(ttl=900)
 def get_option_chain_data(ticker_symbol, date):
     def _get():
-        # FIX: Added session
-        stock = yf.Ticker(ticker_symbol, session=get_session())
+        stock = yf.Ticker(ticker_symbol)
         opt_chain = stock.option_chain(date)
         calls = opt_chain.calls
         calls['type'] = 'call'
@@ -98,8 +90,7 @@ def get_option_chain_data(ticker_symbol, date):
     return fetch_with_retry(_get)
 
 def get_ticker_object(ticker_symbol):
-    # FIX: Added session
-    return yf.Ticker(ticker_symbol, session=get_session())
+    return yf.Ticker(ticker_symbol)
 
 def black_scholes_price(S, K, T, r, sigma, option_type='call'):
     if T <= 0: return max(0, S - K) if option_type == 'call' else max(0, K - S)
@@ -328,12 +319,12 @@ def run_scan(tickers):
     res = []
     bar = st.progress(0); txt = st.empty()
     for i, t in enumerate(tickers):
-        # Reduced sleep just a bit to keep it safe but moving
+        # Moderate sleep to prevent rate limiting since we don't have custom session
         time.sleep(random.uniform(1.0, 2.0)) 
         try:
             txt.text(f"Scanning {t}...")
-            # FIX: Added session here too to prevent blocking during scan
-            stk = yf.Ticker(t, session=get_session())
+            # FIX: Removed session
+            stk = yf.Ticker(t)
             
             curr = stk.history(period='1d')['Close'].iloc[-1]
             dates = stk.options
