@@ -17,6 +17,8 @@ from docx.shared import Inches, Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import nsdecls
 from docx.oxml import parse_xml
+import requests
+import xml.etree.ElementTree as ET # For Google News Parsing
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="Options Command Center", layout="wide", page_icon="🚀")
@@ -49,29 +51,63 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- HELPER FUNCTIONS (AGGRESSIVE DEFENSE) ---
+# --- HELPER FUNCTIONS ---
+
+# 1. NEW: GOOGLE NEWS FETCHER (Bypasses Yahoo)
+def get_google_news(ticker):
+    try:
+        # Google News RSS Feed URL for the specific stock
+        url = f"https://news.google.com/rss/search?q={ticker}+stock&hl=en-US&gl=US&ceid=US:en"
+        response = requests.get(url, timeout=5)
+        
+        # Parse XML
+        root = ET.fromstring(response.content)
+        news_items = []
+        
+        # Grab top 5 items
+        for item in root.findall('.//item')[:5]:
+            title = item.find('title').text
+            link = item.find('link').text
+            pubDate = item.find('pubDate').text
+            # Clean up title (Google adds " - Publisher" at the end usually)
+            source = "Google News"
+            if " - " in title:
+                parts = title.rsplit(" - ", 1)
+                title = parts[0]
+                source = parts[1]
+                
+            news_items.append({
+                'title': title,
+                'link': link,
+                'publisher': source,
+                'published': pubDate
+            })
+        return news_items
+    except Exception as e:
+        return []
+
+# 2. RETRY LOGIC (Standard)
 def fetch_with_retry(func, *args, retries=3):
     for i in range(retries):
         try:
             return func(*args)
         except Exception as e:
             error_msg = str(e).lower()
-            # If rate limited, wait SIGNIFICANTLY longer to clear the ban
             if "too many requests" in error_msg or "429" in error_msg:
-                wait_time = 15 * (i + 1)  # Wait 15s, then 30s, then 45s...
+                wait_time = 10 * (i + 1) # Wait 10s, 20s, 30s
                 time.sleep(wait_time)
                 continue
             raise e
     return func(*args)
 
-@st.cache_data(ttl=3600) # Increased cache time to 1 hour to prevent re-fetching
+@st.cache_data(ttl=3600) 
 def get_stock_history_and_info(ticker_symbol):
     def _get():
         stock = yf.Ticker(ticker_symbol)
         history = stock.history(period="1mo")
         info = stock.info
-        try: news = stock.news
-        except: news = []
+        # REPLACED: No longer asking Yahoo for news
+        news = get_google_news(ticker_symbol)
         return history, info, news
     return fetch_with_retry(_get)
 
@@ -129,7 +165,7 @@ def calculate_max_pain(options_chain):
     if df_pain.empty: return 0
     return df_pain.loc[df_pain['total_loss'].idxmin()]['strike']
 
-# --- INTERACTIVE PLOTS (SCREEN) ---
+# --- INTERACTIVE PLOTS ---
 def plot_greeks_interactive(current_price, strike, days_left, iv):
     prices = np.linspace(strike * 0.8, strike * 1.2, 100)
     T = max(days_left / 365.0, 0.001)
@@ -184,7 +220,7 @@ def plot_flow_battle_interactive(calls, puts, current_strike):
     fig.update_layout(title="Battle Map", template="plotly_dark", height=450, dragmode='pan')
     return fig
 
-# --- STATIC PLOTS (WORD REPORT) ---
+# --- STATIC PLOTS ---
 def create_all_static_plots(ticker, S, K, days, iv, calls, puts):
     plots = {}
     strikes = sorted(calls['strike'].unique())
@@ -293,7 +329,7 @@ def generate_full_dossier(data):
     doc.add_paragraph(data['ai_text'] if data['ai_text'] else "No chart analysis run.")
     doc.add_paragraph(data['strat_log'] if data['strat_log'] else "No strategy query run.")
 
-    doc.add_heading("6. Recent Intel (News)", 1)
+    doc.add_heading("6. Recent Intel (Google News)", 1)
     if data['news']:
         try:
             for n in data['news'][:3]: 
@@ -313,21 +349,19 @@ def generate_full_dossier(data):
             row[4].text=f"{r.get('Gamma', 0):.4f}"
     b = BytesIO(); doc.save(b); return b
 
-# --- OPTIMIZED SCANNER (INTELLIGENT DATE + SAFE THROTTLE) ---
+# --- OPTIMIZED SCANNER (INTELLIGENT DATE + GOOGLE NEWS + SAFE THROTTLE) ---
 def run_scan(tickers):
     res = []
     bar = st.progress(0); txt = st.empty()
     
-    # 1. BATCH DOWNLOAD (Still used because it's efficient)
     try:
         txt.text("Batch fetching prices...")
         batch_data = yf.download(tickers, period="1d", group_by='ticker', progress=False)
     except:
         batch_data = pd.DataFrame()
 
-    # 2. SLOW Loop (Aggressive Throttle)
     for i, t in enumerate(tickers):
-        # SAFETY THROTTLE: 3.0 seconds wait (Very Safe)
+        # SAFETY THROTTLE: 3.0 seconds wait
         time.sleep(3.0) 
         
         try:
@@ -349,25 +383,20 @@ def run_scan(tickers):
             dates = stk.options
             if not dates: continue
             
-            # --- DATE LOGIC FIX: Pick the *useful* next expiration ---
             target_date = dates[0]
             try:
-                # Parse date to check distance
                 first_dt = datetime.strptime(dates[0], "%Y-%m-%d")
                 curr_dt = datetime.now()
                 days_diff = (first_dt - curr_dt).days
-                
-                # If expiring in < 4 days (e.g. today/Fri/Sat/Sun), try grabbing next week
                 if days_diff < 4 and len(dates) > 1:
                     target_date = dates[1]
             except: 
-                pass # Default to dates[0] if parse fails
+                pass 
             
             calls = stk.option_chain(target_date).calls
             calls['diff'] = abs(calls['strike'] - curr)
             atm = calls.loc[calls['diff'].idxmin()]
             
-            # Recalculate days based on the SELECTED target date
             days_to_exp = (datetime.strptime(target_date, "%Y-%m-%d") - datetime.now()).days
             if days_to_exp < 1: days_to_exp = 1
             iv = atm['impliedVolatility']
@@ -474,12 +503,16 @@ if ticker:
 
         with tabs[6]: st.metric("Max Pain", f"${max_pain_val:.2f}")
         with tabs[7]:
+            st.header("Latest News (Google News)")
             if news_data:
                 try:
                     for item in news_data[:3]: 
                         title = item.get('title', 'No Title')
                         link = item.get('link', '#')
-                        st.markdown(f"- [{title}]({link})")
+                        pub = item.get('publisher', 'Unknown')
+                        date = item.get('published', '')
+                        st.markdown(f"**{pub}** - [{title}]({link})  \n*{date}*")
+                        st.markdown("---")
                 except: st.write("News unavailable.")
             else: st.write("No news found.")
 
