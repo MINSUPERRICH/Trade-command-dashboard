@@ -18,7 +18,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import nsdecls
 from docx.oxml import parse_xml
 import requests
-import xml.etree.ElementTree as ET # For Google News Parsing
+import xml.etree.ElementTree as ET
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="Options Command Center", layout="wide", page_icon="🚀")
@@ -53,7 +53,6 @@ st.markdown("""
 
 # --- HELPER FUNCTIONS ---
 
-# 1. NEW: GOOGLE NEWS FETCHER
 def get_google_news(ticker):
     try:
         url = f"https://news.google.com/rss/search?q={ticker}+stock&hl=en-US&gl=US&ceid=US:en"
@@ -74,7 +73,6 @@ def get_google_news(ticker):
     except Exception as e:
         return []
 
-# 2. RETRY LOGIC
 def fetch_with_retry(func, *args, retries=3):
     for i in range(retries):
         try:
@@ -326,7 +324,6 @@ def generate_full_dossier(data):
 
     if data['scan'] is not None and not data['scan'].empty:
         doc.add_heading("7. ATM Scan Results (Full List)", 1)
-        # UPDATED: Added columns for Vol/OI and Moneyness
         st_t = doc.add_table(rows=1, cols=7); st_t.style = 'Table Grid'
         h = st_t.rows[0].cells
         h[0].text='Ticker'; h[1].text='Strike'; h[2].text='Price'; 
@@ -393,7 +390,6 @@ def run_scan(tickers):
             iv = atm['impliedVolatility']
             _, gamma, _ = calculate_greeks(curr, atm['strike'], days_to_exp/365, 0.045, iv)
             
-            # --- NEW CALCS FOR USER ---
             vol_oi = 0
             if atm['openInterest'] > 0:
                 vol_oi = atm['volume'] / atm['openInterest']
@@ -403,8 +399,8 @@ def run_scan(tickers):
             res.append({
                 'Ticker': t, 'ATM Strike': atm['strike'], 'Exp Date': target_date,
                 'Option Price': atm['lastPrice'], 'Volume': atm['volume'], 'Open Int': atm['openInterest'],
-                'Vol/OI': round(vol_oi, 2), # New
-                'Moneyness (%)': round(moneyness, 2), # New
+                'Vol/OI': round(vol_oi, 2),
+                'Moneyness (%)': round(moneyness, 2),
                 'Gamma': round(gamma, 4)
             })
         except: 
@@ -460,7 +456,28 @@ if ticker:
             "13. 🔍 ATM Scanner"
         ])
 
-        with tabs[0]: st.line_chart(history['Close'])
+        with tabs[0]: 
+            st.subheader(f"1. {ticker} Stock Price")
+            st.line_chart(history['Close'])
+            
+            st.subheader(f"2. Estimated Option Price History (${strike_price} Strike)")
+            # --- NEW FEATURE: SIMULATED OPTION HISTORY ---
+            sim_data = []
+            for date, row in history.iterrows():
+                # Calculate how many days were left back then
+                days_to_exp_from_then = (datetime.strptime(selected_date, "%Y-%m-%d") - date.to_pydatetime()).days
+                if days_to_exp_from_then > 0:
+                    # Uses historical stock price + current IV to estimate past option value
+                    sim_price = black_scholes_price(row['Close'], strike_price, days_to_exp_from_then/365, 0.045, contract_iv)
+                    sim_data.append({'Date': date, 'Est. Option Price': sim_price})
+            
+            if sim_data:
+                df_sim = pd.DataFrame(sim_data).set_index('Date')
+                st.line_chart(df_sim)
+                st.caption("*Note: This is a mathematical reconstruction using the Black-Scholes model based on stock price history.*")
+            else:
+                st.write("Option history simulation unavailable for this date.")
+
         with tabs[1]: st.metric("Volume", f"{info.get('volume', 0):,}")
         with tabs[2]: st.metric("IV", f"{contract_iv * 100:.2f}%")
         with tabs[3]: st.metric("Expected Daily Move", f"${daily_move:.2f}")
