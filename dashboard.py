@@ -10,6 +10,8 @@ import time
 import requests
 import xml.etree.ElementTree as ET
 from io import BytesIO
+import google.generativeai as genai  # <--- RESTORED
+from PIL import Image                # <--- RESTORED
 from docx import Document
 from docx.shared import Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
