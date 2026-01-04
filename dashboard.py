@@ -10,8 +10,8 @@ import time
 import requests
 import xml.etree.ElementTree as ET
 from io import BytesIO
-import google.generativeai as genai  # <--- RESTORED
-from PIL import Image                # <--- RESTORED
+import google.generativeai as genai
+from PIL import Image
 from docx import Document
 from docx.shared import Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -88,7 +88,8 @@ def fetch_with_retry(func, *args, retries=3):
 def get_stock_history_and_info(ticker_symbol):
     def _get():
         stock = yf.Ticker(ticker_symbol)
-        history = stock.history(period="1mo")
+        # FIX: Changed "1mo" to "3mo" to ensure enough data points
+        history = stock.history(period="3mo")
         info = stock.info
         news = get_google_news(ticker_symbol)
         return history, info, news
@@ -319,7 +320,6 @@ def run_scan(tickers):
 # --- MAIN APP ---
 st.sidebar.markdown("## ⚙️ Settings")
 ticker = st.sidebar.text_input("Ticker Symbol", value="PEP").upper()
-# NEW: Option Type Selector
 option_type = st.sidebar.selectbox("Option Type", ["Call", "Put"]).lower()
 strike_price = st.sidebar.number_input("Strike Price ($)", value=148.0)
 
@@ -340,7 +340,6 @@ if ticker:
             
             full_chain, calls, puts = get_option_chain_data(ticker, selected_date)
             
-            # SELECT CORRECT DATAFRAME BASED ON USER CHOICE
             active_chain = calls if option_type == 'call' else puts
             
             specific_contract = active_chain.iloc[(active_chain['strike'] - strike_price).abs().argsort()[:1]]
@@ -349,7 +348,6 @@ if ticker:
             days_left = (datetime.strptime(selected_date, "%Y-%m-%d") - datetime.now()).days
             if days_left < 1: days_left = 1
             
-            # UPDATED: Pass option_type to calculations
             theo_price = black_scholes_price(current_price, strike_price, days_left/365, 0.045, contract_iv, option_type)
             d, g, t = calculate_greeks(current_price, strike_price, days_left/365, 0.045, contract_iv, option_type)
             max_pain_val = calculate_max_pain(full_chain)
@@ -374,15 +372,17 @@ if ticker:
             st.line_chart(history['Close'])
             
             st.subheader(f"2. Estimated {option_type.title()} Price History (${strike_price} Strike)")
-            # --- SIMULATED OPTION HISTORY (PUT AWARE & TIMEZONE FIX) ---
+            
             sim_data = []
             for date, row in history.iterrows():
-                # FIX: Remove Timezone info to prevent crash
-                date_clean = date.replace(tzinfo=None)
-                days_to_exp_from_then = (datetime.strptime(selected_date, "%Y-%m-%d") - date_clean).days
-                if days_to_exp_from_then > 0:
-                    sim_price = black_scholes_price(row['Close'], strike_price, days_to_exp_from_then/365, 0.045, contract_iv, option_type)
-                    sim_data.append({'Date': date_clean, 'Est. Option Price': sim_price})
+                try:
+                    date_clean = date.replace(tzinfo=None)
+                    days_to_exp_from_then = (datetime.strptime(selected_date, "%Y-%m-%d") - date_clean).days
+                    if days_to_exp_from_then > 0:
+                        sim_price = black_scholes_price(row['Close'], strike_price, days_to_exp_from_then/365, 0.045, contract_iv, option_type)
+                        sim_data.append({'Date': date_clean, 'Est. Option Price': sim_price})
+                except:
+                    pass
             
             if sim_data:
                 df_sim = pd.DataFrame(sim_data).set_index('Date')
@@ -390,7 +390,7 @@ if ticker:
                 if option_type == 'put':
                     st.caption(f"📉 *Notice: Since this is a PUT, the option price usually goes UP when the stock goes DOWN.*")
             else:
-                st.write("Option history simulation unavailable for this date.")
+                st.write("Not enough historical data to generate option simulation. Try a contract with a further expiration date.")
 
         with tabs[1]: st.metric("Volume", f"{info.get('volume', 0):,}")
         with tabs[2]: st.metric("IV", f"{contract_iv * 100:.2f}%")
@@ -414,7 +414,6 @@ if ticker:
                 target_price_val = 0; move_val = 0
                 if abs(d) > 0.001:
                     move_val = (desired_profit / 100) / abs(d)
-                    # Put Logic: Price needs to DROP
                     target_price_val = current_price - move_val if option_type == 'put' else current_price + move_val
                     direction = "DROP -" if option_type == 'put' else "RISE +"
                     color = "#FF4B4B" if option_type == 'put' else "#00FF7F"
