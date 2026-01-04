@@ -108,7 +108,6 @@ def get_option_chain_data(ticker_symbol, date):
 def get_ticker_object(ticker_symbol):
     return yf.Ticker(ticker_symbol)
 
-# UPDATED: Now supports option_type='put' correctly
 def black_scholes_price(S, K, T, r, sigma, option_type='call'):
     if T <= 0: return max(0, S - K) if option_type == 'call' else max(0, K - S)
     d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
@@ -119,7 +118,6 @@ def black_scholes_price(S, K, T, r, sigma, option_type='call'):
         price = K * np.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
     return price
 
-# UPDATED: Now supports option_type='put' correctly
 def calculate_greeks(S, K, T, r, sigma, option_type='call'):
     if T <= 0 or sigma <= 0: return 0, 0, 0
     d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
@@ -127,7 +125,7 @@ def calculate_greeks(S, K, T, r, sigma, option_type='call'):
     if option_type == 'call':
         delta = norm.cdf(d1)
     else:
-        delta = norm.cdf(d1) - 1 # Put Delta is negative
+        delta = norm.cdf(d1) - 1 
     gamma = norm.pdf(d1) / (S * sigma * np.sqrt(T))
     term1 = -(S * sigma * norm.pdf(d1)) / (2 * np.sqrt(T))
     term2 = r * K * np.exp(-r * T) * norm.cdf(d2)
@@ -155,7 +153,6 @@ def calculate_max_pain(options_chain):
 def plot_greeks_interactive(current_price, strike, days_left, iv, opt_type):
     prices = np.linspace(strike * 0.8, strike * 1.2, 100)
     T = max(days_left / 365.0, 0.001)
-    # Pass opt_type to calc function
     deltas = [calculate_greeks(p, strike, T, 0.045, iv, opt_type)[0] for p in prices]
     gammas = [calculate_greeks(p, strike, T, 0.045, iv, opt_type)[1] for p in prices]
     curr_d, _, _ = calculate_greeks(current_price, strike, T, 0.045, iv, opt_type)
@@ -170,7 +167,6 @@ def plot_greeks_interactive(current_price, strike, days_left, iv, opt_type):
 def plot_simulation_interactive(S, K, days_left, iv, opt_type, r=0.045, purchase_price=0):
     prices = np.linspace(S * 0.8, S * 1.2, 100)
     T1 = max(days_left / 365.0, 0.0001)
-    # Pass opt_type to pricing model
     pnl_today = [black_scholes_price(p, K, T1, r, iv, opt_type) - purchase_price for p in prices]
     T2 = max((days_left / 2) / 365.0, 0.0001)
     pnl_half = [black_scholes_price(p, K, T2, r, iv, opt_type) - purchase_price for p in prices]
@@ -193,7 +189,7 @@ def plot_whale_activity_interactive(df, current_strike, opt_type):
     start = max(0, idx - 4); end = min(len(strikes), idx + 5)
     subset = df[df['strike'].isin(strikes[start:end])]
     
-    color = '#FF4B4B' if opt_type == 'put' else '#00FF7F' # Red for Puts, Green for Calls
+    color = '#FF4B4B' if opt_type == 'put' else '#00FF7F' 
     
     fig = go.Figure()
     fig.add_trace(go.Bar(x=subset['strike'], y=subset['openInterest'], name='OI', marker_color='#4DA6FF'))
@@ -376,13 +372,15 @@ if ticker:
             st.line_chart(history['Close'])
             
             st.subheader(f"2. Estimated {option_type.title()} Price History (${strike_price} Strike)")
-            # --- SIMULATED OPTION HISTORY (PUT AWARE) ---
+            # --- SIMULATED OPTION HISTORY (PUT AWARE & TIMEZONE FIX) ---
             sim_data = []
             for date, row in history.iterrows():
-                days_to_exp_from_then = (datetime.strptime(selected_date, "%Y-%m-%d") - date.to_pydatetime()).days
+                # FIX: Remove Timezone info to prevent crash
+                date_clean = date.replace(tzinfo=None)
+                days_to_exp_from_then = (datetime.strptime(selected_date, "%Y-%m-%d") - date_clean).days
                 if days_to_exp_from_then > 0:
                     sim_price = black_scholes_price(row['Close'], strike_price, days_to_exp_from_then/365, 0.045, contract_iv, option_type)
-                    sim_data.append({'Date': date, 'Est. Option Price': sim_price})
+                    sim_data.append({'Date': date_clean, 'Est. Option Price': sim_price})
             
             if sim_data:
                 df_sim = pd.DataFrame(sim_data).set_index('Date')
