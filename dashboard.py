@@ -53,40 +53,28 @@ st.markdown("""
 
 # --- HELPER FUNCTIONS ---
 
-# 1. NEW: GOOGLE NEWS FETCHER (Bypasses Yahoo)
+# 1. NEW: GOOGLE NEWS FETCHER
 def get_google_news(ticker):
     try:
-        # Google News RSS Feed URL for the specific stock
         url = f"https://news.google.com/rss/search?q={ticker}+stock&hl=en-US&gl=US&ceid=US:en"
         response = requests.get(url, timeout=5)
-        
-        # Parse XML
         root = ET.fromstring(response.content)
         news_items = []
-        
-        # Grab top 5 items
         for item in root.findall('.//item')[:5]:
             title = item.find('title').text
             link = item.find('link').text
             pubDate = item.find('pubDate').text
-            # Clean up title (Google adds " - Publisher" at the end usually)
             source = "Google News"
             if " - " in title:
                 parts = title.rsplit(" - ", 1)
                 title = parts[0]
                 source = parts[1]
-                
-            news_items.append({
-                'title': title,
-                'link': link,
-                'publisher': source,
-                'published': pubDate
-            })
+            news_items.append({'title': title, 'link': link, 'publisher': source, 'published': pubDate})
         return news_items
     except Exception as e:
         return []
 
-# 2. RETRY LOGIC (Standard)
+# 2. RETRY LOGIC
 def fetch_with_retry(func, *args, retries=3):
     for i in range(retries):
         try:
@@ -94,7 +82,7 @@ def fetch_with_retry(func, *args, retries=3):
         except Exception as e:
             error_msg = str(e).lower()
             if "too many requests" in error_msg or "429" in error_msg:
-                wait_time = 10 * (i + 1) # Wait 10s, 20s, 30s
+                wait_time = 10 * (i + 1)
                 time.sleep(wait_time)
                 continue
             raise e
@@ -106,7 +94,6 @@ def get_stock_history_and_info(ticker_symbol):
         stock = yf.Ticker(ticker_symbol)
         history = stock.history(period="1mo")
         info = stock.info
-        # REPLACED: No longer asking Yahoo for news
         news = get_google_news(ticker_symbol)
         return history, info, news
     return fetch_with_retry(_get)
@@ -339,14 +326,18 @@ def generate_full_dossier(data):
 
     if data['scan'] is not None and not data['scan'].empty:
         doc.add_heading("7. ATM Scan Results (Full List)", 1)
-        st_t = doc.add_table(rows=1, cols=5); st_t.style = 'Table Grid'
+        # UPDATED: Added columns for Vol/OI and Moneyness
+        st_t = doc.add_table(rows=1, cols=7); st_t.style = 'Table Grid'
         h = st_t.rows[0].cells
-        h[0].text='Ticker'; h[1].text='Strike'; h[2].text='Price'; h[3].text='Vol'; h[4].text='Gamma'
+        h[0].text='Ticker'; h[1].text='Strike'; h[2].text='Price'; 
+        h[3].text='Vol'; h[4].text='Vol/OI'; h[5].text='Money%'; h[6].text='Gamma'
         for _, r in data['scan'].iterrows():
             row = st_t.add_row().cells
             row[0].text=str(r['Ticker']); row[1].text=str(r['ATM Strike'])
             row[2].text=str(r['Option Price']); row[3].text=str(r['Volume'])
-            row[4].text=f"{r.get('Gamma', 0):.4f}"
+            row[4].text=f"{r.get('Vol/OI', 0):.1f}"
+            row[5].text=f"{r.get('Moneyness (%)', 0):.1f}%"
+            row[6].text=f"{r.get('Gamma', 0):.4f}"
     b = BytesIO(); doc.save(b); return b
 
 # --- OPTIMIZED SCANNER (INTELLIGENT DATE + GOOGLE NEWS + SAFE THROTTLE) ---
@@ -402,9 +393,18 @@ def run_scan(tickers):
             iv = atm['impliedVolatility']
             _, gamma, _ = calculate_greeks(curr, atm['strike'], days_to_exp/365, 0.045, iv)
             
+            # --- NEW CALCS FOR USER ---
+            vol_oi = 0
+            if atm['openInterest'] > 0:
+                vol_oi = atm['volume'] / atm['openInterest']
+            
+            moneyness = ((curr - atm['strike']) / atm['strike']) * 100
+            
             res.append({
                 'Ticker': t, 'ATM Strike': atm['strike'], 'Exp Date': target_date,
                 'Option Price': atm['lastPrice'], 'Volume': atm['volume'], 'Open Int': atm['openInterest'],
+                'Vol/OI': round(vol_oi, 2), # New
+                'Moneyness (%)': round(moneyness, 2), # New
                 'Gamma': round(gamma, 4)
             })
         except: 
