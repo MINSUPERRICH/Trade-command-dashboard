@@ -88,7 +88,6 @@ def fetch_with_retry(func, *args, retries=3):
 def get_stock_history_and_info(ticker_symbol):
     def _get():
         stock = yf.Ticker(ticker_symbol)
-        # FIX: Changed "1mo" to "3mo" to ensure enough data points
         history = stock.history(period="3mo")
         info = stock.info
         news = get_google_news(ticker_symbol)
@@ -152,7 +151,100 @@ def calculate_max_pain(options_chain):
     if df_pain.empty: return 0
     return df_pain.loc[df_pain['total_loss'].idxmin()]['strike']
 
-# --- PLOTS ---
+# --- PORTFOLIO FUNCTIONS ---
+def update_portfolio_prices(portfolio_df):
+    updated_data = []
+    
+    # Batch fetch stock prices first to save time
+    unique_tickers = portfolio_df['Ticker'].unique().tolist()
+    if unique_tickers:
+        try:
+            stock_data = yf.download(unique_tickers, period="1d", group_by='ticker', progress=False)
+        except:
+            stock_data = pd.DataFrame()
+    else:
+        stock_data = pd.DataFrame()
+
+    progress_bar = st.progress(0)
+    
+    for i, row in portfolio_df.iterrows():
+        try:
+            ticker = row['Ticker']
+            trade_type = row['Type']
+            
+            # 1. Get Stock Price
+            current_stock_price = 0.0
+            try:
+                if len(unique_tickers) > 1:
+                    current_stock_price = stock_data[ticker]['Close'].iloc[-1]
+                else:
+                    current_stock_price = stock_data['Close'].iloc[-1]
+            except:
+                # Fallback
+                t_obj = yf.Ticker(ticker)
+                current_stock_price = t_obj.history(period='1d')['Close'].iloc[-1]
+
+            current_price = 0.0
+            
+            # 2. Get Instrument Price (Stock or Option)
+            if trade_type == "Stock":
+                current_price = current_stock_price
+                multiplier = 1
+            else:
+                # Option Logic
+                multiplier = 100
+                exp_date = row['Exp Date']
+                strike = row['Strike']
+                opt_type = row['Opt Type'].lower() # call/put
+                
+                try:
+                    t_obj = yf.Ticker(ticker)
+                    chain = t_obj.option_chain(exp_date)
+                    if opt_type == 'call':
+                        opts = chain.calls
+                    else:
+                        opts = chain.puts
+                    
+                    # Find specific strike
+                    contract = opts[opts['strike'] == strike]
+                    if not contract.empty:
+                        current_price = contract.iloc[0]['lastPrice']
+                    else:
+                        current_price = 0 # Error finding contract
+                except:
+                    current_price = 0
+
+            # 3. Calculate Math
+            qty = row['Qty']
+            bought_price = row['Bought Price']
+            
+            total_cost = bought_price * qty * multiplier
+            current_val = current_price * qty * multiplier
+            total_pl = current_val - total_cost
+            
+            updated_data.append({
+                'Ticker': ticker,
+                'Type': trade_type,
+                'Date Bought': row['Date Bought'],
+                'Details': f"{row['Exp Date']} ${row['Strike']} {row['Opt Type']}" if trade_type == "Option" else "Shares",
+                'Qty': qty,
+                'Current Stock': round(current_stock_price, 2),
+                'Bought Price': bought_price,
+                'Current Price': current_price,
+                'Total Cost': total_cost,
+                'Current Value': current_val,
+                'Total P/L': total_pl
+            })
+            
+        except Exception as e:
+            st.error(f"Error updating {row['Ticker']}: {e}")
+            
+        progress_bar.progress((i + 1) / len(portfolio_df))
+        
+    progress_bar.empty()
+    return pd.DataFrame(updated_data)
+
+# --- PLOTS (Standard) ---
 def plot_greeks_interactive(current_price, strike, days_left, iv, opt_type):
     prices = np.linspace(strike * 0.8, strike * 1.2, 100)
     T = max(days_left / 365.0, 0.001)
@@ -260,16 +352,14 @@ def generate_full_dossier(data):
     
     b = BytesIO(); doc.save(b); return b
 
-# --- OPTIMIZED SCANNER (INTELLIGENT DATE + GOOGLE NEWS + SAFE THROTTLE) ---
+# --- OPTIMIZED SCANNER ---
 def run_scan(tickers):
     res = []
     bar = st.progress(0); txt = st.empty()
-    
     try:
         txt.text("Batch fetching prices...")
         batch_data = yf.download(tickers, period="1d", group_by='ticker', progress=False)
-    except:
-        batch_data = pd.DataFrame()
+    except: batch_data = pd.DataFrame()
 
     for i, t in enumerate(tickers):
         time.sleep(3.0) 
@@ -317,6 +407,12 @@ def run_scan(tickers):
     txt.empty(); bar.empty()
     return pd.DataFrame(res)
 
+# --- INITIALIZE SESSION STATE FOR PORTFOLIO ---
+if "portfolio" not in st.session_state:
+    st.session_state["portfolio"] = pd.DataFrame(columns=[
+        "Ticker", "Type", "Exp Date", "Strike", "Opt Type", "Qty", "Bought Price", "Date Bought"
+    ])
+
 # --- MAIN APP ---
 st.sidebar.markdown("## ⚙️ Settings")
 ticker = st.sidebar.text_input("Ticker Symbol", value="PEP").upper()
@@ -339,7 +435,6 @@ if ticker:
             selected_date = st.sidebar.selectbox("Expiration Date", expirations)
             
             full_chain, calls, puts = get_option_chain_data(ticker, selected_date)
-            
             active_chain = calls if option_type == 'call' else puts
             
             specific_contract = active_chain.iloc[(active_chain['strike'] - strike_price).abs().argsort()[:1]]
@@ -364,7 +459,7 @@ if ticker:
             "1. Price", "2. Volume", "3. IV", "4. Rule of 16", 
             "5. Whale Detector", "6. Risk & Profit", "7. Max Pain", "8. News", 
             "9. 🤖 Chart Analyst", "10. 💬 Strategy Engine", "11. 🔮 Future Simulator", "12. 🌊 Flow Monitor",
-            "13. 🔍 ATM Scanner"
+            "13. 🔍 ATM Scanner", "14. 📒 Portfolio Tracker"
         ])
 
         with tabs[0]: 
@@ -372,7 +467,6 @@ if ticker:
             st.line_chart(history['Close'])
             
             st.subheader(f"2. Estimated {option_type.title()} Price History (${strike_price} Strike)")
-            
             sim_data = []
             for date, row in history.iterrows():
                 try:
@@ -381,26 +475,23 @@ if ticker:
                     if days_to_exp_from_then > 0:
                         sim_price = black_scholes_price(row['Close'], strike_price, days_to_exp_from_then/365, 0.045, contract_iv, option_type)
                         sim_data.append({'Date': date_clean, 'Est. Option Price': sim_price})
-                except:
-                    pass
+                except: pass
             
             if sim_data:
                 df_sim = pd.DataFrame(sim_data).set_index('Date')
                 st.line_chart(df_sim)
-                if option_type == 'put':
-                    st.caption(f"📉 *Notice: Since this is a PUT, the option price usually goes UP when the stock goes DOWN.*")
-            else:
-                st.write("Not enough historical data to generate option simulation. Try a contract with a further expiration date.")
+                if option_type == 'put': st.caption(f"📉 *Notice: Since this is a PUT, the option price usually goes UP when the stock goes DOWN.*")
+            else: st.write("Not enough historical data to generate option simulation.")
 
         with tabs[1]: st.metric("Volume", f"{info.get('volume', 0):,}")
         with tabs[2]: st.metric("IV", f"{contract_iv * 100:.2f}%")
         with tabs[3]: st.metric("Expected Daily Move", f"${daily_move:.2f}")
 
-        with tabs[4]: # Whale (PUT AWARE)
+        with tabs[4]: # Whale
             st.header(f"Whale Detector ({option_type.upper()})")
             st.plotly_chart(plot_whale_activity_interactive(active_chain, strike_price, option_type), use_container_width=True)
 
-        with tabs[5]: # Greeks & Calc (PUT AWARE)
+        with tabs[5]: # Greeks & Calc
             st.header("Risk & Profit Hub")
             c1, c2, c3 = st.columns(3)
             c1.metric("Delta", f"{d:.2f}"); c2.metric("Gamma", f"{g:.3f}"); c3.metric("Theta", f"{t:.3f}")
@@ -441,11 +532,7 @@ if ticker:
             if news_data:
                 try:
                     for item in news_data[:3]: 
-                        title = item.get('title', 'No Title')
-                        link = item.get('link', '#')
-                        pub = item.get('publisher', 'Unknown')
-                        date = item.get('published', '')
-                        st.markdown(f"**{pub}** - [{title}]({link})  \n*{date}*")
+                        st.markdown(f"**{item.get('publisher','')}** - [{item.get('title','')}]({item.get('link','')})  \n*{item.get('published','')}*")
                         st.markdown("---")
                 except: st.write("News unavailable.")
             else: st.write("No news found.")
@@ -478,7 +565,7 @@ if ticker:
                     st.session_state["strat_log"] = f"Q: {q}\nA: {resp}"
                     st.write(resp)
 
-        with tabs[10]: # Sim (PUT AWARE)
+        with tabs[10]: # Sim
             st.header("🔮 Future Simulator")
             st.plotly_chart(plot_simulation_interactive(current_price, strike_price, days_left, contract_iv, option_type, purchase_price=theo_price), use_container_width=True)
 
@@ -499,11 +586,82 @@ if ticker:
                 with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
                     st.session_state["scan_results"].to_excel(writer, index=False)
                 st.download_button("📥 Download Excel", buffer.getvalue(), "ATM_Scan.xlsx", "application/vnd.ms-excel")
+        
+        with tabs[13]: # PORTFOLIO TRACKER
+            st.header("📒 Live Portfolio Tracker")
+            
+            # --- INPUT FORM ---
+            with st.expander("➕ Add New Trade", expanded=True):
+                c_pf1, c_pf2 = st.columns(2)
+                with c_pf1:
+                    pf_type = st.selectbox("Type", ["Option", "Stock"])
+                    pf_ticker = st.text_input("Ticker (e.g. TSLA)", value="TSLA").upper()
+                    pf_qty = st.number_input("Quantity", 1, step=1)
+                with c_pf2:
+                    if pf_type == "Option":
+                        pf_exp = st.date_input("Expiration Date")
+                        pf_strike = st.number_input("Strike", value=440.0)
+                        pf_opt_type = st.selectbox("Call/Put", ["Call", "Put"])
+                    else:
+                        pf_exp, pf_strike, pf_opt_type = None, None, None
+                    pf_price = st.number_input("Bought Price (Per Share/Contract Price)", value=1.00)
+                    pf_date_bought = st.date_input("Date Bought", datetime.now())
+
+                if st.button("Add Trade"):
+                    new_trade = {
+                        "Ticker": pf_ticker, "Type": pf_type, 
+                        "Exp Date": str(pf_exp) if pf_exp else None,
+                        "Strike": pf_strike, "Opt Type": pf_opt_type,
+                        "Qty": pf_qty, "Bought Price": pf_price, 
+                        "Date Bought": str(pf_date_bought)
+                    }
+                    st.session_state["portfolio"] = pd.concat([st.session_state["portfolio"], pd.DataFrame([new_trade])], ignore_index=True)
+                    st.success("Trade Added!")
+                    st.rerun()
+
+            st.markdown("---")
+            
+            # --- DISPLAY TABLE ---
+            if not st.session_state["portfolio"].empty:
+                if st.button("🔄 Refresh Live Prices"):
+                    st.rerun()
+                    
+                # Calculate Live Values
+                live_df = update_portfolio_prices(st.session_state["portfolio"])
+                
+                # Format for Display
+                if not live_df.empty:
+                    def color_pl(val):
+                        color = '#00FF7F' if val >= 0 else '#FF4B4B'
+                        return f'color: {color}'
+
+                    display_df = live_df[['Ticker', 'Details', 'Qty', 'Bought Price', 'Current Price', 'Total Cost', 'Current Value', 'Total P/L']]
+                    
+                    st.dataframe(
+                        display_df.style.map(color_pl, subset=['Total P/L'])
+                        .format({
+                            'Bought Price': '${:.2f}',
+                            'Current Price': '${:.2f}',
+                            'Total Cost': '${:,.2f}',
+                            'Current Value': '${:,.2f}',
+                            'Total P/L': '${:,.2f}'
+                        }),
+                        use_container_width=True,
+                        height=400
+                    )
+                    
+                    total_portfolio_pl = live_df['Total P/L'].sum()
+                    st.metric("Total Portfolio P/L", f"${total_portfolio_pl:,.2f}", delta=total_portfolio_pl)
+                    
+                    if st.button("🗑️ Clear All Trades"):
+                        st.session_state["portfolio"] = st.session_state["portfolio"].iloc[0:0]
+                        st.rerun()
+            else:
+                st.info("No trades added yet. Use the form above to add your first trade.")
 
         # --- REPORT EXPORT ---
         st.sidebar.markdown("---")
         
-        # Prepare Comprehensive Data Pack
         data_pack = {
             'ticker': ticker, 'type': option_type, 'price': current_price, 'strike': strike_price, 'exp': selected_date,
             'iv': contract_iv, 'daily_move': daily_move, 'volume': info.get('volume', 0),
