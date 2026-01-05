@@ -282,7 +282,6 @@ if "portfolio" not in st.session_state:
 
 # --- MAIN NAVIGATION ---
 st.sidebar.markdown("## 🧭 Navigation")
-# NOTE: "Analysis Dashboard" is now FIRST so it is the default view.
 app_mode = st.sidebar.radio("Go To:", ["Analysis Dashboard 📊", "Portfolio Tracker 📒"])
 st.sidebar.markdown("---")
 
@@ -341,21 +340,8 @@ if app_mode == "Analysis Dashboard 📊":
             with tabs[0]: 
                 st.subheader(f"1. {ticker} Stock Price")
                 st.line_chart(history['Close'])
-                st.subheader(f"2. Estimated {option_type.title()} Price History (${strike_price} Strike)")
-                sim_data = []
-                for date, row in history.iterrows():
-                    try:
-                        date_clean = date.replace(tzinfo=None)
-                        days_to_exp_from_then = (datetime.strptime(selected_date, "%Y-%m-%d") - date_clean).days
-                        if days_to_exp_from_then > 0:
-                            sim_price = black_scholes_price(row['Close'], strike_price, days_to_exp_from_then/365, 0.045, contract_iv, option_type)
-                            sim_data.append({'Date': date_clean, 'Est. Option Price': sim_price})
-                    except: pass
-                if sim_data:
-                    df_sim = pd.DataFrame(sim_data).set_index('Date')
-                    st.line_chart(df_sim)
-                    if option_type == 'put': st.caption(f"📉 *Notice: Since this is a PUT, the option price usually goes UP when the stock goes DOWN.*")
-                else: st.write("Not enough historical data to generate option simulation.")
+                # REMOVED THE "ESTIMATED OPTION PRICE" CHART HERE
+                st.info("ℹ️ Note: Historical option price charts (candlesticks) are not available on free data sources. Please check your brokerage for the official trade history.")
 
             with tabs[1]: st.metric("Volume", f"{info.get('volume', 0):,}")
             with tabs[2]: st.metric("IV", f"{contract_iv * 100:.2f}%")
