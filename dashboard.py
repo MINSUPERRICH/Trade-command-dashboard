@@ -144,23 +144,15 @@ def calculate_max_pain(options_chain):
     return df_pain.loc[df_pain['total_loss'].idxmin()]['strike']
 
 # --- PORTFOLIO FUNCTIONS ---
-# This simply recalculates P/L based on whatever is in the dataframe
 def recalculate_portfolio(df):
     if df.empty: return df
-    
-    # Ensure types are correct for math
     df['Qty'] = pd.to_numeric(df['Qty'], errors='coerce').fillna(0)
     df['Bought Price'] = pd.to_numeric(df['Bought Price'], errors='coerce').fillna(0.0)
     df['Current Price'] = pd.to_numeric(df['Current Price'], errors='coerce').fillna(0.0)
-    
-    # Calculate Logic
-    # If it's an option (Type == "Option"), multiplier is 100. If Stock, 1.
     multipliers = np.where(df['Type'] == 'Option', 100, 1)
-    
     df['Total Cost'] = df['Bought Price'] * df['Qty'] * multipliers
     df['Current Value'] = df['Current Price'] * df['Qty'] * multipliers
     df['Total P/L'] = df['Current Value'] - df['Total Cost']
-    
     return df
 
 # --- PLOTS ---
@@ -170,7 +162,6 @@ def plot_greeks_interactive(current_price, strike, days_left, iv, opt_type):
     deltas = [calculate_greeks(p, strike, T, 0.045, iv, opt_type)[0] for p in prices]
     gammas = [calculate_greeks(p, strike, T, 0.045, iv, opt_type)[1] for p in prices]
     curr_d, _, _ = calculate_greeks(current_price, strike, T, 0.045, iv, opt_type)
-    
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=prices, y=deltas, mode='lines', name='Delta', line=dict(color='#4DA6FF', width=3)))
     fig.add_trace(go.Scatter(x=prices, y=gammas, mode='lines', name='Gamma', line=dict(color='#00FF7F', width=2, dash='dash'), yaxis="y2"))
@@ -186,7 +177,6 @@ def plot_simulation_interactive(S, K, days_left, iv, opt_type, r=0.045, purchase
     pnl_half = [black_scholes_price(p, K, T2, r, iv, opt_type) - purchase_price for p in prices]
     T3 = 0.0001
     pnl_exp = [black_scholes_price(p, K, T3, r, iv, opt_type) - purchase_price for p in prices]
-    
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=prices, y=pnl_today, mode='lines', name='Today (T+0)', line=dict(color='#4DA6FF', width=3)))
     fig.add_trace(go.Scatter(x=prices, y=pnl_half, mode='lines', name=f'Halfway', line=dict(color='#FFD700', width=2, dash='dash')))
@@ -202,9 +192,7 @@ def plot_whale_activity_interactive(df, current_strike, opt_type):
     except: idx = 0
     start = max(0, idx - 4); end = min(len(strikes), idx + 5)
     subset = df[df['strike'].isin(strikes[start:end])]
-    
     color = '#FF4B4B' if opt_type == 'put' else '#00FF7F' 
-    
     fig = go.Figure()
     fig.add_trace(go.Bar(x=subset['strike'], y=subset['openInterest'], name='OI', marker_color='#4DA6FF'))
     fig.add_trace(go.Bar(x=subset['strike'], y=subset['volume'], name='Vol', marker_color=color))
@@ -235,29 +223,23 @@ def generate_full_dossier(data):
     head = doc.add_heading(f"MISSION REPORT: {data['ticker']} ({data['type'].upper()})", 0)
     head.alignment = WD_ALIGN_PARAGRAPH.CENTER
     doc.add_paragraph(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-    
     doc.add_heading("1. Executive Summary", 1)
     t = doc.add_table(rows=2, cols=4); t.style = 'Table Grid'
     r = t.rows[1].cells
     r[0].text = data['ticker']; r[1].text = f"${data['price']:.2f}"
     r[2].text = f"${data['strike']} {data['type'].upper()}"; r[3].text = str(data['exp'])
-    
     doc.add_heading("2. Key Intel Metrics", 1)
     p = doc.add_paragraph()
     p.add_run(f"• IV: ").bold = True; p.add_run(f"{data['iv']*100:.2f}%\n")
     p.add_run(f"• Rule of 16: ").bold = True; p.add_run(f"${data['daily_move']:.2f}\n")
     p.add_run(f"• Volume: ").bold = True; p.add_run(f"{data['volume']:,}")
-    
     b = BytesIO(); doc.save(b); return b
 
 def run_scan(tickers):
     res = []
     bar = st.progress(0); txt = st.empty()
-    try:
-        txt.text("Batch fetching prices...")
-        batch_data = yf.download(tickers, period="1d", group_by='ticker', progress=False)
+    try: batch_data = yf.download(tickers, period="1d", group_by='ticker', progress=False)
     except: batch_data = pd.DataFrame()
-
     for i, t in enumerate(tickers):
         time.sleep(3.0) 
         try:
@@ -268,133 +250,46 @@ def run_scan(tickers):
                     if len(tickers) > 1: curr = batch_data[t]['Close'].iloc[-1]
                     else: curr = batch_data['Close'].iloc[-1]
                 except: pass
-            
             stk = yf.Ticker(t)
             if curr == 0: curr = stk.history(period='1d')['Close'].iloc[-1]
             dates = stk.options
             if not dates: continue
-            
             target_date = dates[0]
             try:
                 first_dt = datetime.strptime(dates[0], "%Y-%m-%d")
-                days_diff = (first_dt - datetime.now()).days
-                if days_diff < 4 and len(dates) > 1: target_date = dates[1]
+                if (first_dt - datetime.now()).days < 4 and len(dates) > 1: target_date = dates[1]
             except: pass 
-            
             calls = stk.option_chain(target_date).calls
             calls['diff'] = abs(calls['strike'] - curr)
             atm = calls.loc[calls['diff'].idxmin()]
-            
+            iv = atm['impliedVolatility']
             days_to_exp = (datetime.strptime(target_date, "%Y-%m-%d") - datetime.now()).days
             if days_to_exp < 1: days_to_exp = 1
-            iv = atm['impliedVolatility']
             _, gamma, _ = calculate_greeks(curr, atm['strike'], days_to_exp/365, 0.045, iv)
-            
             vol_oi = atm['volume'] / atm['openInterest'] if atm['openInterest'] > 0 else 0
             moneyness = ((curr - atm['strike']) / atm['strike']) * 100
-            
-            res.append({
-                'Ticker': t, 'ATM Strike': atm['strike'], 'Exp Date': target_date,
-                'Price': atm['lastPrice'], 'Vol': atm['volume'], 'Vol/OI': round(vol_oi, 2),
-                'Money%': round(moneyness, 2), 'Gamma': round(gamma, 4)
-            })
+            res.append({'Ticker': t, 'ATM Strike': atm['strike'], 'Exp Date': target_date, 'Price': atm['lastPrice'], 'Vol': atm['volume'], 'Vol/OI': round(vol_oi, 2), 'Money%': round(moneyness, 2), 'Gamma': round(gamma, 4)})
         except: pass
         bar.progress((i+1)/len(tickers))
-        
     txt.empty(); bar.empty()
     return pd.DataFrame(res)
 
-# --- INITIALIZE SESSION STATE FOR PORTFOLIO ---
+# --- INITIALIZE SESSION STATE ---
 if "portfolio" not in st.session_state:
     st.session_state["portfolio"] = pd.DataFrame(columns=[
         "Ticker", "Type", "Details", "Qty", "Bought Price", "Current Price", "Total Cost", "Current Value", "Total P/L"
     ])
 
-# --- MAIN NAVIGATION (THE FIX FOR REFRESHING) ---
+# --- MAIN NAVIGATION ---
 st.sidebar.markdown("## 🧭 Navigation")
-# This creates a persistent menu. It won't reset to Tab 1 every time.
-app_mode = st.sidebar.radio("Go To:", ["Portfolio Tracker 📒", "Analysis Dashboard 📊"])
-
+# NOTE: "Analysis Dashboard" is now FIRST so it is the default view.
+app_mode = st.sidebar.radio("Go To:", ["Analysis Dashboard 📊", "Portfolio Tracker 📒"])
 st.sidebar.markdown("---")
 
 # =========================================================
-# PAGE 1: PORTFOLIO TRACKER (The Focus)
+# PAGE 1: ANALYSIS DASHBOARD (Original Features)
 # =========================================================
-if app_mode == "Portfolio Tracker 📒":
-    st.title("📒 Live Portfolio Tracker")
-    st.caption("Add trades here. Manually update 'Current Price' to see P/L changes instantly.")
-
-    # 1. ADD TRADE FORM
-    with st.expander("➕ Add New Trade", expanded=True):
-        c_pf1, c_pf2, c_pf3 = st.columns(3)
-        with c_pf1:
-            pf_ticker = st.text_input("Ticker", value="TSLA").upper()
-            pf_type = st.selectbox("Type", ["Option", "Stock"])
-        with c_pf2:
-            if pf_type == "Option":
-                pf_strike = st.text_input("Strike", value="440")
-                pf_opt_type = st.selectbox("Call/Put", ["Call", "Put"])
-                pf_exp = st.text_input("Exp Date (e.g. Jan 9)", value="Jan 9")
-                details = f"{pf_exp} {pf_strike} {pf_opt_type}"
-            else:
-                details = "Shares"
-            pf_qty = st.number_input("Qty", 1, step=1)
-        with c_pf3:
-            pf_buy_price = st.number_input("Bought Price", value=1.00)
-            pf_curr_price = st.number_input("Current Price (Manual)", value=1.00)
-
-        if st.button("Add Trade to List"):
-            # Calculate initial P/L
-            mult = 100 if pf_type == "Option" else 1
-            cost = pf_buy_price * pf_qty * mult
-            curr_val = pf_curr_price * pf_qty * mult
-            pl = curr_val - cost
-            
-            new_row = {
-                "Ticker": pf_ticker, "Type": pf_type, "Details": details,
-                "Qty": pf_qty, "Bought Price": pf_buy_price, 
-                "Current Price": pf_curr_price, 
-                "Total Cost": cost, "Current Value": curr_val, "Total P/L": pl
-            }
-            st.session_state["portfolio"] = pd.concat([st.session_state["portfolio"], pd.DataFrame([new_row])], ignore_index=True)
-            st.rerun()
-
-    st.markdown("### 📋 Your Trades (Editable)")
-    
-    # 2. EDITABLE DATA TABLE (THE FIX FOR MANUAL ENTRY & DELETE)
-    # Allows user to Edit cells directly and Delete rows
-    
-    edited_df = st.data_editor(
-        st.session_state["portfolio"],
-        num_rows="dynamic",  # Allows adding/deleting rows
-        column_config={
-            "Bought Price": st.column_config.NumberColumn(format="$%.2f"),
-            "Current Price": st.column_config.NumberColumn(format="$%.2f", help="Edit this to update P/L"),
-            "Total Cost": st.column_config.NumberColumn(format="$%.2f", disabled=True),
-            "Current Value": st.column_config.NumberColumn(format="$%.2f", disabled=True),
-            "Total P/L": st.column_config.NumberColumn(format="$%.2f", disabled=True),
-        },
-        use_container_width=True,
-        key="portfolio_editor"
-    )
-
-    # 3. RECALCULATION LOGIC
-    # Check if user edited anything. If so, recalc the math and save.
-    if not edited_df.equals(st.session_state["portfolio"]):
-        recalced_df = recalculate_portfolio(edited_df)
-        st.session_state["portfolio"] = recalced_df
-        st.rerun()
-
-    # 4. TOTALS
-    if not st.session_state["portfolio"].empty:
-        total_pl = st.session_state["portfolio"]['Total P/L'].sum()
-        st.markdown(f"### Total Portfolio P/L: :{'green' if total_pl >= 0 else 'red'}[${total_pl:,.2f}]")
-
-
-# =========================================================
-# PAGE 2: ANALYSIS DASHBOARD (The Original Tools)
-# =========================================================
-elif app_mode == "Analysis Dashboard 📊":
+if app_mode == "Analysis Dashboard 📊":
     st.sidebar.markdown("## ⚙️ Dashboard Settings")
     ticker = st.sidebar.text_input("Ticker Symbol", value="PEP").upper()
     option_type = st.sidebar.selectbox("Option Type", ["Call", "Put"]).lower()
@@ -446,7 +341,6 @@ elif app_mode == "Analysis Dashboard 📊":
             with tabs[0]: 
                 st.subheader(f"1. {ticker} Stock Price")
                 st.line_chart(history['Close'])
-                
                 st.subheader(f"2. Estimated {option_type.title()} Price History (${strike_price} Strike)")
                 sim_data = []
                 for date, row in history.iterrows():
@@ -457,7 +351,6 @@ elif app_mode == "Analysis Dashboard 📊":
                             sim_price = black_scholes_price(row['Close'], strike_price, days_to_exp_from_then/365, 0.045, contract_iv, option_type)
                             sim_data.append({'Date': date_clean, 'Est. Option Price': sim_price})
                     except: pass
-                
                 if sim_data:
                     df_sim = pd.DataFrame(sim_data).set_index('Date')
                     st.line_chart(df_sim)
@@ -477,7 +370,6 @@ elif app_mode == "Analysis Dashboard 📊":
                 c1, c2, c3 = st.columns(3)
                 c1.metric("Delta", f"{d:.2f}"); c2.metric("Gamma", f"{g:.3f}"); c3.metric("Theta", f"{t:.3f}")
                 st.plotly_chart(plot_greeks_interactive(current_price, strike_price, days_left, contract_iv, option_type), use_container_width=True)
-                
                 st.markdown("---")
                 st.subheader("🎯 Profit Target Calculator")
                 c_calc1, c_calc2 = st.columns([1, 2])
@@ -489,32 +381,18 @@ elif app_mode == "Analysis Dashboard 📊":
                         target_price_val = current_price - move_val if option_type == 'put' else current_price + move_val
                         direction = "DROP -" if option_type == 'put' else "RISE +"
                         color = "#FF4B4B" if option_type == 'put' else "#00FF7F"
-                        
-                        st.markdown(f"""
-                        <div style="background-color: #1E3D59; padding: 20px; border-radius: 10px; border-left: 10px solid {color}; color: white; margin-bottom: 20px;">
-                            <h4 style='margin:0; color: white;'>Target Stock Price: <b>${target_price_val:.2f}</b></h4>
-                            <p style='margin:0; color: white;'>Stock needs to {direction}${move_val:.2f}</p>
-                        </div>
-                        """, unsafe_allow_html=True)
-                
+                        st.markdown(f"<div style='background-color: #1E3D59; padding: 20px; border-radius: 10px; border-left: 10px solid {color}; color: white; margin-bottom: 20px;'><h4 style='margin:0; color: white;'>Target Stock Price: <b>${target_price_val:.2f}</b></h4><p style='margin:0; color: white;'>Stock needs to {direction}${move_val:.2f}</p></div>", unsafe_allow_html=True)
                 st.subheader("🗓️ Holiday Decay Calculator")
                 holidays = st.number_input("Days Closed", 1)
                 decay_loss_val = abs(t) * holidays * 100
-                st.markdown(f"""
-                <div style="background-color: #330000; padding: 20px; border-radius: 10px; border-left: 10px solid #FF4B4B; color: white;">
-                    <h4 style='margin:0; color: white;'>Estimated Loss: <b>${decay_loss_val:.2f} per contract</b></h4>
-                    <p style='margin:0; color: white;'>While you sleep...</p>
-                </div>
-                """, unsafe_allow_html=True)
+                st.markdown(f"<div style='background-color: #330000; padding: 20px; border-radius: 10px; border-left: 10px solid #FF4B4B; color: white;'><h4 style='margin:0; color: white;'>Estimated Loss: <b>${decay_loss_val:.2f} per contract</b></h4><p style='margin:0; color: white;'>While you sleep...</p></div>", unsafe_allow_html=True)
 
             with tabs[6]: st.metric("Max Pain", f"${max_pain_val:.2f}")
             with tabs[7]:
                 st.header("Latest News (Google News)")
                 if news_data:
                     try:
-                        for item in news_data[:3]: 
-                            st.markdown(f"**{item.get('publisher','')}** - [{item.get('title','')}]({item.get('link','')})  \n*{item.get('published','')}*")
-                            st.markdown("---")
+                        for item in news_data[:3]: st.markdown(f"**{item.get('publisher','')}** - [{item.get('title','')}]({item.get('link','')})  \n*{item.get('published','')}*"); st.markdown("---")
                     except: st.write("News unavailable.")
                 else: st.write("No news found.")
 
@@ -529,8 +407,7 @@ elif app_mode == "Analysis Dashboard 📊":
                             model = genai.GenerativeModel("models/gemini-2.0-flash-exp")
                             content = ["Analyze for walls and traps."] + [Image.open(f) for f in up_files]
                             with st.spinner("Analyzing..."):
-                                st.session_state["ai_result"] = model.generate_content(content).text
-                                st.rerun()
+                                st.session_state["ai_result"] = model.generate_content(content).text; st.rerun()
                         except Exception as e: st.error(str(e))
                 if st.session_state["ai_result"]: st.write(st.session_state["ai_result"])
 
@@ -543,8 +420,7 @@ elif app_mode == "Analysis Dashboard 📊":
                         genai.configure(api_key=st.secrets["api_keys"]["gemini"])
                         model = genai.GenerativeModel("models/gemini-2.0-flash-exp")
                         resp = model.generate_content(f"Context: {ticker} {option_type.upper()} ${strike_price}. Question: {q}").text
-                        st.session_state["strat_log"] = f"Q: {q}\nA: {resp}"
-                        st.write(resp)
+                        st.session_state["strat_log"] = f"Q: {q}\nA: {resp}"; st.write(resp)
 
             with tabs[10]: # Sim
                 st.header("🔮 Future Simulator")
@@ -564,28 +440,74 @@ elif app_mode == "Analysis Dashboard 📊":
                 if "scan_results" in st.session_state:
                     st.dataframe(st.session_state["scan_results"], use_container_width=True)
                     buffer = BytesIO()
-                    with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-                        st.session_state["scan_results"].to_excel(writer, index=False)
+                    with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer: st.session_state["scan_results"].to_excel(writer, index=False)
                     st.download_button("📥 Download Excel", buffer.getvalue(), "ATM_Scan.xlsx", "application/vnd.ms-excel")
             
             # --- REPORT EXPORT ---
             st.sidebar.markdown("---")
-            
-            data_pack = {
-                'ticker': ticker, 'type': option_type, 'price': current_price, 'strike': strike_price, 'exp': selected_date,
-                'iv': contract_iv, 'daily_move': daily_move, 'volume': info.get('volume', 0),
-                'max_pain': max_pain_val,
-                'delta': d, 'gamma': g, 'theta': t,
-                'profit_goal': desired_profit, 'profit_price': target_price_val,
-                'holidays': holidays, 'decay_loss': decay_loss_val,
-                'ai_text': st.session_state.get("ai_result", ""),
-                'strat_log': st.session_state.get("strat_log", ""),
-                'news': news_data,
-                'scan': st.session_state.get("scan_results", None)
-            }
-            
+            data_pack = {'ticker': ticker, 'type': option_type, 'price': current_price, 'strike': strike_price, 'exp': selected_date, 'iv': contract_iv, 'daily_move': daily_move, 'volume': info.get('volume', 0), 'max_pain': max_pain_val, 'delta': d, 'gamma': g, 'theta': t, 'profit_goal': desired_profit, 'profit_price': target_price_val, 'holidays': holidays, 'decay_loss': decay_loss_val, 'ai_text': st.session_state.get("ai_result", ""), 'strat_log': st.session_state.get("strat_log", ""), 'news': news_data, 'scan': st.session_state.get("scan_results", None)}
             report_file = generate_full_dossier(data_pack)
             st.sidebar.download_button("📄 Download Full Dossier", report_file.getvalue(), f"{ticker}_{option_type.upper()}_Full_Dossier.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 
         except Exception as e:
             st.error(f"Waiting for data... ({e})")
+
+# =========================================================
+# PAGE 2: PORTFOLIO TRACKER (Separate View)
+# =========================================================
+elif app_mode == "Portfolio Tracker 📒":
+    st.title("📒 Live Portfolio Tracker")
+    st.caption("Add trades below. Double-click cells to edit manually.")
+
+    with st.expander("➕ Add New Trade", expanded=True):
+        c_pf1, c_pf2, c_pf3 = st.columns(3)
+        with c_pf1:
+            pf_ticker = st.text_input("Ticker", value="TSLA").upper()
+            pf_type = st.selectbox("Type", ["Option", "Stock"])
+        with c_pf2:
+            if pf_type == "Option":
+                pf_strike = st.text_input("Strike", value="440")
+                pf_opt_type = st.selectbox("Call/Put", ["Call", "Put"])
+                pf_exp = st.text_input("Exp Date", value="Jan 9")
+                details = f"{pf_exp} {pf_strike} {pf_opt_type}"
+            else:
+                details = "Shares"
+            pf_qty = st.number_input("Qty", 1, step=1)
+        with c_pf3:
+            pf_buy_price = st.number_input("Bought Price", value=1.00)
+            pf_curr_price = st.number_input("Current Price (Manual)", value=1.00)
+
+        if st.button("Add Trade to List"):
+            mult = 100 if pf_type == "Option" else 1
+            cost = pf_buy_price * pf_qty * mult
+            curr_val = pf_curr_price * pf_qty * mult
+            pl = curr_val - cost
+            new_row = {"Ticker": pf_ticker, "Type": pf_type, "Details": details, "Qty": pf_qty, "Bought Price": pf_buy_price, "Current Price": pf_curr_price, "Total Cost": cost, "Current Value": curr_val, "Total P/L": pl}
+            st.session_state["portfolio"] = pd.concat([st.session_state["portfolio"], pd.DataFrame([new_row])], ignore_index=True)
+            st.rerun()
+
+    st.markdown("### 📋 Your Trades (Editable)")
+    
+    # 2. EDITABLE DATA TABLE (FIX)
+    edited_df = st.data_editor(
+        st.session_state["portfolio"],
+        num_rows="dynamic",
+        column_config={
+            "Bought Price": st.column_config.NumberColumn(format="$%.2f"),
+            "Current Price": st.column_config.NumberColumn(format="$%.2f", help="Update this manually"),
+            "Total Cost": st.column_config.NumberColumn(format="$%.2f", disabled=True),
+            "Current Value": st.column_config.NumberColumn(format="$%.2f", disabled=True),
+            "Total P/L": st.column_config.NumberColumn(format="$%.2f", disabled=True),
+        },
+        use_container_width=True,
+        key="portfolio_editor"
+    )
+
+    if not edited_df.equals(st.session_state["portfolio"]):
+        recalced_df = recalculate_portfolio(edited_df)
+        st.session_state["portfolio"] = recalced_df
+        st.rerun()
+
+    if not st.session_state["portfolio"].empty:
+        total_pl = st.session_state["portfolio"]['Total P/L'].sum()
+        st.markdown(f"### Total Portfolio P/L: :{'green' if total_pl >= 0 else 'red'}[${total_pl:,.2f}]")
