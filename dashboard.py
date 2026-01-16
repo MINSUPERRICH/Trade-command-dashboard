@@ -21,22 +21,27 @@ from docx.oxml import parse_xml
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="Options Command Center", layout="wide", page_icon="🚀")
 
-# --- PASSWORD PROTECTION ---
+# --- PASSWORD PROTECTION (FIXED & SAFE VERSION) ---
 def check_password():
+    """Returns `True` if the user had the correct password."""
     if "password_correct" not in st.session_state:
-        st.session_state["password_correct"] = False
-    
-    def password_entered():
-        if st.session_state["password"] == st.secrets["passwords"]["main_password"]:
-            st.session_state["password_correct"] = True
-            del st.session_state["password"]
-        else:
-            st.session_state["password_correct"] = False
+        st.session_state.password_correct = False
 
-    if not st.session_state["password_correct"]:
-        st.text_input("🔑 Enter Password", type="password", on_change=password_entered, key="password")
-        return False
-    return True
+    if st.session_state.password_correct:
+        return True
+
+    # Show input for password
+    password_input = st.text_input("🔑 Enter Password", type="password")
+    
+    # Check the password ONLY when the user types something
+    if password_input:
+        if "passwords" in st.secrets and password_input == st.secrets["passwords"]["main_password"]:
+            st.session_state.password_correct = True
+            st.rerun()  # Force reload to show the app
+        else:
+            st.error("❌ Password incorrect. Please try again.")
+
+    return False
 
 if not check_password():
     st.stop()
@@ -235,15 +240,14 @@ def generate_full_dossier(data):
     p.add_run(f"• Volume: ").bold = True; p.add_run(f"{data['volume']:,}")
     b = BytesIO(); doc.save(b); return b
 
-# --- UPGRADED SCANNER (Targeting Monthly/Feb Expirations) ---
+# --- UPGRADED SCANNER (Targeting Monthly Expirations) ---
 def run_scan(tickers):
     res = []
     bar = st.progress(0); txt = st.empty()
     try: batch_data = yf.download(tickers, period="1d", group_by='ticker', progress=False)
     except: batch_data = pd.DataFrame()
-    
     for i, t in enumerate(tickers):
-        time.sleep(1.0) # Faster scan
+        time.sleep(1.0) 
         try:
             txt.text(f"Scanning options for {t}...")
             curr = 0
@@ -252,23 +256,20 @@ def run_scan(tickers):
                     if len(tickers) > 1: curr = batch_data[t]['Close'].iloc[-1]
                     else: curr = batch_data['Close'].iloc[-1]
                 except: pass
-            
             stk = yf.Ticker(t)
             if curr == 0: curr = stk.history(period='1d')['Close'].iloc[-1]
             dates = stk.options
             if not dates: continue
             
-            # --- LOGIC CHANGE HERE ---
-            # Old Logic: target_date = dates[0] (Next week)
-            # New Logic: Find the first date that is at least 25 days away (Feb Monthly)
+            # --- INTELLIGENT DATE FINDER (Looks for > 25 Days Out) ---
             target_date = dates[0]
             for d in dates:
                 dt_obj = datetime.strptime(d, "%Y-%m-%d")
                 days_out = (dt_obj - datetime.now()).days
-                if days_out >= 25: # Looks for trades ~1 month out (Feb 20)
+                if days_out >= 25: # Looks for Feb 20 or monthly equivalent
                     target_date = d
                     break
-            # -------------------------
+            # --------------------------------------------------------
 
             calls = stk.option_chain(target_date).calls
             calls['diff'] = abs(calls['strike'] - curr)
@@ -279,22 +280,12 @@ def run_scan(tickers):
             _, gamma, _ = calculate_greeks(curr, atm['strike'], days_to_exp/365, 0.045, iv)
             vol_oi = atm['volume'] / atm['openInterest'] if atm['openInterest'] > 0 else 0
             moneyness = ((curr - atm['strike']) / atm['strike']) * 100
-            
-            res.append({
-                'Ticker': t, 
-                'ATM Strike': atm['strike'], 
-                'Exp Date': target_date, # Now shows Feb 20
-                'Price': atm['lastPrice'], 
-                'Vol': atm['volume'], 
-                'Vol/OI': round(vol_oi, 2), 
-                'Money%': round(moneyness, 2), 
-                'Gamma': round(gamma, 4)
-            })
+            res.append({'Ticker': t, 'ATM Strike': atm['strike'], 'Exp Date': target_date, 'Price': atm['lastPrice'], 'Vol': atm['volume'], 'Vol/OI': round(vol_oi, 2), 'Money%': round(moneyness, 2), 'Gamma': round(gamma, 4)})
         except: pass
         bar.progress((i+1)/len(tickers))
     txt.empty(); bar.empty()
     return pd.DataFrame(res)
-   
+
 # --- INITIALIZE SESSION STATE ---
 if "portfolio" not in st.session_state:
     st.session_state["portfolio"] = pd.DataFrame(columns=[
@@ -540,4 +531,3 @@ elif app_mode == "Portfolio Tracker 📒":
     if not st.session_state["portfolio"].empty:
         total_pl = st.session_state["portfolio"]['Total P/L'].sum()
         st.markdown(f"### Total Portfolio P/L: :{'green' if total_pl >= 0 else 'red'}[${total_pl:,.2f}]")
-
