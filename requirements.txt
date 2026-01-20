@@ -1,11 +1,10 @@
 streamlit
 yfinance
 pandas
-numpy
-scipy
+pandas_ta
+openpyxl
 plotly
 matplotlib
-google-generativeai
-xlsxwriter
-python-docx
-openpyxl
+requests
+pytesseract
+Pillow
